@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AGY Web Console — Antigravity CLI</title>
+  <!-- xterm.js CSS (local vendor with CDN fallback) -->
+  <link rel="stylesheet" href="/vendor/xterm/css/xterm.css" onerror="this.href='https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css'" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Header & Session Tab Bar -->
+    <header class="top-bar">
+      <div class="brand">
+        <span class="brand-icon">⚡</span>
+        <span class="brand-title">AGY Web Console</span>
+        <span class="brand-badge">ConPTY Pipeline</span>
+      </div>
+
+      <div class="tabs-container" id="tabsContainer" role="tablist">
+        <!-- Dynamic session tabs rendered here -->
+      </div>
+
+      <div class="top-actions">
+        <button class="btn btn-subtle" id="btnToggleHub" title="내부 북마크 관리, 브라우저 북마크 및 열린 탭 조회">
+          <span>🧭 북마크 & 탭 허브</span>
+        </button>
+        <button class="btn btn-primary" id="btnNewSession" title="새 PowerShell + agy 콘솔 세션 열기">
+          <span>＋ 새 콘솔</span>
+        </button>
+        <button class="btn btn-subtle" id="btnNewSessionCustom" title="작업 폴더(CWD) 및 옵션을 지정하여 새 세션 열기">
+          <span>📁 경로 지정</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Quick Internal Bookmark Bar -->
+    <div class="bookmark-bar" id="bookmarkBar">
+      <div class="bookmark-bar-label">⭐ 북마크</div>
+      <div class="bookmark-chips" id="bookmarkChips">
+        <!-- Rendered dynamically -->
+      </div>
+      <div class="bookmark-bar-actions">
+        <button class="btn btn-chip" id="btnQuickAddBookmark" title="새 내부 북마크 추가">＋ 추가</button>
+        <button class="btn btn-chip" id="btnOpenNaverMailReader" title="열려 있는 네이버 메일 페이지에서 메일 목록 및 본문 읽어오기">
+          📧 네이버 메일 읽기
+        </button>
+        <button class="btn btn-chip" id="btnOpenTabsInspector" title="현재 브라우저의 북마크 및 열려 있는 탭 확인">
+          🌐 열린 탭 / 브라우저 북마크
+        </button>
+      </div>
+    </div>
+
+    <!-- Sub-toolbar: Quick CLI Pipeline Actions & Session Status -->
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <span class="status-indicator" id="connStatusDot"></span>
+        <span class="status-text" id="connStatusText">연결 준비 중...</span>
+        <span class="meta-divider">|</span>
+        <span class="meta-item" id="sessionMetaShell">pwsh / powershell</span>
+        <span class="meta-divider">|</span>
+        <span class="meta-item" id="sessionMetaCwd" title="현재 세션 시작 작업 디렉토리">C:\Users\meesokim</span>
+        <span class="meta-divider">|</span>
+        <span class="meta-item" id="sessionMetaSize">120×32</span>
+      </div>
+
+      <div class="toolbar-right">
+        <button class="btn btn-chip" id="btnRunAgy" title="현재 PowerShell 콘솔에 'agy' 명령어 전송">
+          🚀 agy 실행
+        </button>
+        <button class="btn btn-chip" id="btnSendHelp" title="agy 슬래시 명령어 '/help' 전송">
+          💡 /help
+        </button>
+        <button class="btn btn-chip" id="btnSendCtrlC" title="인터럽트 시그널 (Ctrl+C / 0x03) 전송">
+          ⏹ Ctrl+C
+        </button>
+        <button class="btn btn-chip" id="btnSendCtrlD2" title="agy 종료 시그널 (Ctrl+D 두 번) 전송">
+          🚪 agy 종료 (Ctrl+D×2)
+        </button>
+        <button class="btn btn-chip" id="btnClearTerm" title="브라우저 터미널 화면 정리 (cls)">
+          🧹 화면 지우기
+        </button>
+      </div>
+    </div>
+
+    <!-- Main Terminal Viewport Area -->
+    <main class="terminal-stage" id="terminalStage">
+      <!-- Each session gets its own .terminal-pane element -->
+      <div class="empty-state" id="emptyState" hidden>
+        <div class="empty-card">
+          <h2>열려 있는 콘솔 세션이 없습니다</h2>
+          <p>새 콘솔 세션을 생성하면 Windows ConPTY 파이프라인을 통해 PowerShell 및 <code>agy</code> CLI가 즉시 실행됩니다.</p>
+          <button class="btn btn-primary btn-lg" id="btnEmptyCreate">＋ 새 AGY 콘솔 시작하기</button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modal for Custom Session Creation -->
+  <div class="modal-backdrop" id="newSessionModal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-header">
+        <h3 id="modalTitle">새 콘솔 세션 설정</h3>
+        <button class="modal-close" id="btnCloseModal" aria-label="닫기">✕</button>
+      </div>
+      <form id="newSessionForm">
+        <div class="form-group">
+          <label for="inputSessionTitle">세션 이름 (선택)</label>
+          <input type="text" id="inputSessionTitle" placeholder="예: 프로젝트 A - AGY" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="inputSessionCwd">작업 디렉토리 (Working Directory)</label>
+          <input type="text" id="inputSessionCwd" placeholder="C:\Users\meesokim" required autocomplete="off" />
+          <small class="form-hint">PowerShell 및 <code>agy</code>가 시작될 로컬 폴더 경로를 입력하세요.</small>
+        </div>
+        <div class="form-group form-checkbox">
+          <input type="checkbox" id="inputAutoRunAgy" checked />
+          <label for="inputAutoRunAgy">PowerShell 시작 직후 <code>agy</code> 자동 실행</label>
+        </div>
+        <div class="form-error" id="modalError" hidden></div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-subtle" id="btnCancelModal">취소</button>
+          <button type="submit" class="btn btn-primary">콘솔 생성</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Slide-over Drawer: Bookmarks & Open Browser Tabs Hub -->
+  <aside class="hub-drawer" id="hubDrawer" hidden>
+    <div class="hub-header">
+      <div class="hub-title">🧭 북마크 & 브라우저 탭 허브</div>
+      <button class="modal-close" id="btnCloseHub" aria-label="허브 닫기">✕</button>
+    </div>
+
+    <div class="hub-tabs">
+      <button class="hub-tab active" data-hub-tab="internal">⭐ 내부 북마크</button>
+      <button class="hub-tab" data-hub-tab="naver-mail">📧 네이버 메일</button>
+      <button class="hub-tab" data-hub-tab="browser-bm">📚 브라우저 북마크</button>
+      <button class="hub-tab" data-hub-tab="open-tabs">🌐 열린 탭/창</button>
+    </div>
+
+    <!-- Tab: Naver Mail Reader -->
+    <div class="hub-panel" id="hubPanelNaverMail" hidden>
+      <div class="hub-panel-toolbar">
+        <button class="btn btn-primary" id="btnRefreshNaverMail">🔄 메일 읽어오기</button>
+        <button class="btn btn-subtle" id="btnSendAllMailsToAgy" title="현재 불러온 메일 목록을 agy 콘솔에 전달하여 요약/분석 요청">
+          🤖 목록 콘솔로 전달
+        </button>
+      </div>
+      <div class="hub-list" id="naverMailList"></div>
+    </div>
+
+    <!-- Tab 1: Internal Bookmarks Manager -->
+    <div class="hub-panel" id="hubPanelInternal">
+      <form class="bm-add-form" id="bmAddForm">
+        <input type="text" id="bmInputTitle" placeholder="북마크 이름 (예: 네이버 메일)" required autocomplete="off" />
+        <input type="text" id="bmInputUrl" placeholder="https://..." required autocomplete="off" />
+        <div class="bm-form-row">
+          <input type="text" id="bmInputCategory" placeholder="분류 (예: 업무, 개발)" autocomplete="off" />
+          <button type="submit" class="btn btn-primary">＋ 저장</button>
+        </div>
+      </form>
+      <div class="hub-list" id="internalBookmarksList"></div>
+    </div>
+
+    <!-- Tab 2: Local Installed Browser Bookmarks (Chrome, Edge, Whale, Brave) -->
+    <div class="hub-panel" id="hubPanelBrowserBm" hidden>
+      <div class="hub-panel-toolbar">
+        <input type="text" id="browserBmSearch" placeholder="Chrome / Edge 북마크 검색..." autocomplete="off" />
+        <button class="btn btn-subtle" id="btnRefreshBrowserBm" title="다시 스캔">🔄</button>
+      </div>
+      <div class="hub-list" id="browserBookmarksList"></div>
+    </div>
+
+    <!-- Tab 3: Open Browser Windows & Tabs Inspector -->
+    <div class="hub-panel" id="hubPanelOpenTabs" hidden>
+      <div class="hub-panel-toolbar">
+        <button class="btn btn-subtle" id="btnRefreshOpenTabs">🔄 열린 탭 새로고침</button>
+        <button class="btn btn-primary" id="btnLaunchCdpBrowser" title="원격 디버깅 포트(9222)가 활성화된 브라우저를 열어 모든 탭 URL을 실시간 추적합니다">
+          🔌 실시간 탭 추적 브라우저 열기
+        </button>
+      </div>
+      <div class="hub-list" id="openTabsList"></div>
+    </div>
+  </aside>
+
+  <!-- xterm.js & Addons (local vendor with CDN fallback) -->
+  <script src="/vendor/xterm/lib/xterm.js"></script>
+  <script src="/vendor/addon-fit/lib/addon-fit.js"></script>
+  <script src="/vendor/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="/vendor/addon-unicode11/lib/addon-unicode11.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

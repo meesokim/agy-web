@@ -1,0 +1,23 @@
+[
+  {
+    "id": "bm-naver-mail",
+    "title": "네이버 메일",
+    "url": "https://mail.naver.com",
+    "category": "자주 쓰는 곳",
+    "createdAt": "2026-10-24T01:12:52.066Z"
+  },
+  {
+    "id": "bm-github-skills",
+    "title": "Matt Pocock Skills",
+    "url": "https://github.com/mattpocock/skills",
+    "category": "개발 / AGY",
+    "createdAt": "2026-10-24T01:12:52.071Z"
+  },
+  {
+    "id": "bm-agy-docs",
+    "title": "Antigravity 공식 문서",
+    "url": "https://antigravity.google/docs",
+    "category": "개발 / AGY",
+    "createdAt": "2026-10-24T01:12:52.071Z"
+  }
+]

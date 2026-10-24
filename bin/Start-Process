@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Shim for Start-Process when invoked inside bash by agy CLI
+TARGET=""
+for arg in "$@"; do
+  case "$arg" in
+    -*) ;;
+    *)
+      TARGET="$arg"
+      break
+      ;;
+  esac
+done
+
+if [ -z "$TARGET" ]; then
+  exit 0
+fi
+
+# Strip surrounding quotes if present
+TARGET="${TARGET#\"}"
+TARGET="${TARGET%\"}"
+TARGET="${TARGET#\'}"
+TARGET="${TARGET%\'}"
+
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
+  \$t = '$TARGET';
+  try {
+    Invoke-RestMethod -Uri 'http://127.0.0.1:${PORT:-3080}/api/open-url' -Method Post -ContentType 'application/json' -Body (@{ url = \$t } | ConvertTo-Json) -TimeoutSec 2 | Out-Null
+  } catch {
+    Start-Process \$t
+  }
+" >/dev/null 2>&1 &
+exit 0

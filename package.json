@@ -1,0 +1,18 @@
+{
+  "name": "agy-web",
+  "version": "1.0.0",
+  "description": "Local web server providing a full ConPTY console pipeline for Antigravity CLI (agy) in the browser",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-unicode11": "^0.8.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/xterm": "^5.5.0",
+    "express": "^4.21.2",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  }
+}

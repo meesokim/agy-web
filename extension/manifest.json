@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "AGY Web Console Bridge (Naver Mail & Tabs)",
+  "version": "1.0.0",
+  "description": "현재 브라우저의 열린 탭 목록과 네이버 메일(mail.naver.com) 내용을 로컬 AGY Web Console(127.0.0.1:3080)과 실시간 동기화합니다.",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://mail.naver.com/*",
+    "http://127.0.0.1:3080/*",
+    "http://localhost:3080/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://mail.naver.com/*"],
+      "js": ["content-naver-mail.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
