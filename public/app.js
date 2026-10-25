@@ -443,10 +443,7 @@
     };
 
     function compactTerminalProgress(raw) {
-      if (!raw || typeof raw !== 'string') return raw;
-      return raw
-        .replace(/ \x1b\[38;2;147;161;161m\([^)\r\n]*\)(?:\x1b\[m)?/g, '')
-        .replace(/(\x1b\[\?7[hl])\x1b\[\d+G/g, '$1\x1b[K');
+      return raw || '';
     }
 
     ws.onmessage = (event) => {
@@ -495,6 +492,10 @@
           handleHermesAgentStatus(msg);
         } else if (msg.type === 'hermes_prompt_dispatched') {
           handleHermesPromptDispatched(msg);
+        } else if (msg.type === 'hermes_agent_message') {
+          if (msg.entry) {
+            appendHermesMessage(msg.entry);
+          }
         } else if (msg.type === 'today_work_summary_card') {
           renderTodayWorkSummaryCard(msg.summary);
         } else if (msg.type === 'output') {
@@ -2790,6 +2791,37 @@
     });
   }
 
+  function formatMarkdownToHtml(text) {
+    if (!text || typeof text !== 'string') return '';
+    let out = escapeHtml(text);
+
+    // Code blocks: ```lang ... ```
+    out = out.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
+      return `<pre class="hermes-code-block"><code class="language-${lang}">${code.trim()}</code></pre>`;
+    });
+
+    // Inline code: `code`
+    out = out.replace(/`([^`\n]+)`/g, '<code class="hermes-inline-code">$1</code>');
+
+    // Bold: **text**
+    out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+
+    // Headers: ###, ##, #
+    out = out.replace(/^### (.*$)/gim, '<h4 style="margin:8px 0 4px;color:#58a6ff;">$1</h4>');
+    out = out.replace(/^## (.*$)/gim, '<h3 style="margin:10px 0 6px;color:#58a6ff;">$1</h3>');
+    out = out.replace(/^# (.*$)/gim, '<h2 style="margin:12px 0 8px;color:#58a6ff;">$1</h2>');
+
+    // Lists: - item or • item
+    out = out.replace(/^[•\-] (.*$)/gim, '<li style="margin-left:16px;">$1</li>');
+
+    // Convert newlines (outside <pre>) to <br/>
+    const parts = out.split(/(<pre[\s\S]*?<\/pre>)/);
+    for (let i = 0; i < parts.length; i += 2) {
+      parts[i] = parts[i].replace(/\n/g, '<br/>');
+    }
+    return parts.join('');
+  }
+
   function appendHermesMessage(entry) {
     if (!hermesChatFeed || !entry) return;
     if (entry.id && renderedMessageIds.has(entry.id)) return;
@@ -2804,13 +2836,17 @@
     msgEl.className = `hermes-message ${isUser ? 'user' : 'agent'}`;
 
     const timeStr = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    const bubbleContent = isUser
+      ? escapeHtml(entry.content).replace(/\n/g, '<br/>')
+      : formatMarkdownToHtml(entry.content);
+
     msgEl.innerHTML = `
       <div class="hermes-message-header">
         <span>${isUser ? '👤 사용자' : '🏛️ Hermes Agent'}</span>
         ${entry.model ? `<span class="composer-tag">${escapeHtml(entry.model)}</span>` : ''}
         <span>${timeStr}</span>
       </div>
-      <div class="hermes-message-bubble">${escapeHtml(entry.content).replace(/\n/g, '<br/>')}</div>
+      <div class="hermes-message-bubble">${bubbleContent}</div>
     `;
 
     hermesChatFeed.appendChild(msgEl);

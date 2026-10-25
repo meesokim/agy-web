@@ -654,6 +654,77 @@ function checkAndAutoApprovePrompt(session, plainChunk) {
   }
 }
 
+function writeInputToSessionPty(session, text, submit = true) {
+  if (!session || session.exited) return;
+  const str = String(text ?? '');
+  if (!str) return;
+
+  if (submit) {
+    if (str.includes('\n')) {
+      // Use bracketed paste so CLI/TUI receives the full multiline text as one prompt without prematurely submitting on \n
+      session.ptyProcess.write(`\x1b[200~${str}\x1b[201~\r`);
+    } else {
+      session.ptyProcess.write(`${str}\r`);
+    }
+  } else {
+    session.ptyProcess.write(str);
+  }
+}
+
+function extractAgentResponse(rawText, userPrompt = '') {
+  if (!rawText || typeof rawText !== 'string') return '';
+  const plain = rawText
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
+    .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
+    .replace(/\x1b[()][AB012]/g, '');
+
+  let textAfterPrompt = '';
+  if (userPrompt && userPrompt.trim()) {
+    const firstLine = userPrompt.trim().split(/\r?\n/)[0].trim();
+    const idx = plain.lastIndexOf(firstLine);
+    if (idx !== -1) {
+      textAfterPrompt = plain.slice(idx + firstLine.length);
+    }
+  }
+  if (!textAfterPrompt) {
+    const promptIdx = plain.lastIndexOf('\n> ');
+    textAfterPrompt = promptIdx !== -1 ? plain.slice(promptIdx + 3) : plain;
+    const lines = textAfterPrompt.split(/\r?\n/);
+    lines.shift();
+    textAfterPrompt = lines.join('\n');
+  }
+
+  const lines = textAfterPrompt.split(/\r?\n/);
+  const responseLines = [];
+  for (const line of lines) {
+    if (
+      line.includes('? for shortcuts') ||
+      line.includes('────────') ||
+      line.includes('esc to dismiss') ||
+      line.includes('Verbosity now defaults')
+    ) {
+      break;
+    }
+    if (
+      line.includes('● Ran') ||
+      line.includes('● Explored') ||
+      line.includes('● Read') ||
+      line.includes('● Edited') ||
+      line.includes('● Created') ||
+      line.includes('Thought for') ||
+      line.includes('Thinking...')
+    ) {
+      continue;
+    }
+    responseLines.push(line.trimEnd());
+  }
+
+  while (responseLines.length && !responseLines[0].trim()) responseLines.shift();
+  while (responseLines.length && !responseLines[responseLines.length - 1].trim()) responseLines.pop();
+
+  return responseLines.map((l) => l.replace(/^ {1,2}/, '')).join('\n');
+}
+
 function createSession({
   id: customId,
   cwd,
@@ -714,10 +785,7 @@ function createSession({
   };
 
   const compactAgyProgress = (raw) => {
-    if (!session.compactLogs || !raw) return raw;
-    return raw
-      .replace(/ \x1b\[38;2;147;161;161m\([^)\r\n]*\)(?:\x1b\[m)?/g, '')
-      .replace(/(\x1b\[\?7[hl])\x1b\[\d+G/g, '$1\x1b[K');
+    return raw || '';
   };
 
   const appendScrollback = (data) => {
@@ -849,6 +917,9 @@ function createSession({
       }
     } else if (plain.includes('? for shortcuts') || plain.includes('Goodbye!')) {
       if (session.agentActivity.status !== 'idle') {
+        const wasBusy =
+          session.agentActivity.status === 'thinking' ||
+          session.agentActivity.status === 'tool_executing';
         session.agentActivity.status = 'idle';
         if (
           session.agentActivity.recentToolCalls.length > 0 &&
@@ -858,6 +929,34 @@ function createSession({
         }
         session.agentActivity.currentTool = null;
         statusChanged = true;
+
+        // When transition from thinking/tool to idle, extract and dispatch the agent response!
+        if (wasBusy) {
+          const agentText = extractAgentResponse(
+            session.scrollback.slice(-15000),
+            session.lastUserPrompt || ''
+          );
+          if (agentText && agentText !== session.lastEmittedAgentResponse) {
+            session.lastEmittedAgentResponse = agentText;
+            const agentEntry = {
+              id: `msg-${Date.now().toString(36)}-${crypto.randomBytes(2).toString('hex')}`,
+              role: 'agent',
+              content: agentText,
+              model: session.activeModel || null,
+              timestamp: new Date().toISOString(),
+            };
+            if (!session.hermesHistory) session.hermesHistory = [];
+            session.hermesHistory.push(agentEntry);
+            if (session.hermesHistory.length > 200) {
+              session.hermesHistory = session.hermesHistory.slice(-200);
+            }
+            broadcast({
+              type: 'hermes_agent_message',
+              sessionId: session.id,
+              entry: agentEntry,
+            });
+          }
+        }
       }
     }
 
@@ -891,6 +990,13 @@ function createSession({
                 ? 'clear; agy --effort low -c || agy --effort low\r'
                 : 'clear; agy --effort low\r';
           ptyProcess.write(cmd);
+
+          // Send Esc after 1.5s to automatically dismiss any initial tip/verbosity modal banner
+          setTimeout(() => {
+            if (!session.exited) {
+              ptyProcess.write('\x1b');
+            }
+          }, 1500);
         }
       }, 250);
     }
@@ -1642,9 +1748,9 @@ function handleSendToSession(req, res) {
       `4. ✅ 달성된 결과물 및 향후 권장 작업`;
   }
 
-  const payloadStr = submit ? `${payloadContent}\r` : payloadContent;
+  session.lastUserPrompt = content;
   processSessionInputForHistory(session, submit ? `${content}\r` : content);
-  session.ptyProcess.write(payloadStr);
+  writeInputToSessionPty(session, payloadContent, submit);
 
   if (dailySummaryData) {
     const cardMsg = JSON.stringify({
@@ -1745,12 +1851,12 @@ app.post('/api/hermes/prompt', (req, res) => {
 
   const promptText = prompt.trim();
   const isDailySummary = isTodayWorkSummaryIntent(promptText);
-  let payloadStr;
   let dailySummaryData = null;
+  let enrichedPrompt = null;
 
   if (isDailySummary) {
     dailySummaryData = buildTodayWorkSummary(session);
-    const enrichedPrompt =
+    enrichedPrompt =
       `${dailySummaryData.markdown}\n\n` +
       `위는 오늘 오전 4시부터 지금까지 웹 콘솔에서 작업한 실제 명령문, 프롬프트, 도구 실행 및 Git 커밋 기록입니다.\n` +
       `이 실제 기록을 바탕으로 오늘(오전 4시부터 지금까지) 작업한 내용을 다음 순서로 일목요연하게 정리해서 보고서 형식으로 알려줘:\n` +
@@ -1758,9 +1864,6 @@ app.post('/api/hermes/prompt', (req, res) => {
       `2. 🕒 시간대별 작업 진행 내역 (오전 4시~현재)\n` +
       `3. 💻 개발 및 Git 커밋/코드 변경 사항\n` +
       `4. ✅ 달성된 결과물 및 향후 권장 작업`;
-    payloadStr = `${enrichedPrompt}\r`;
-  } else {
-    payloadStr = `${promptText}\r`;
   }
 
   const historyEntry = {
@@ -1784,9 +1887,12 @@ app.post('/api/hermes/prompt', (req, res) => {
     session.agentActivity.status = 'thinking';
   }
 
-  // Write prompt to PTY
+  session.lastUserPrompt = promptText;
+  session.activeModel = model || session.activeModel || null;
+
+  // Write prompt to PTY with bracketed paste if multiline
   processSessionInputForHistory(session, `${promptText}\r`);
-  session.ptyProcess.write(payloadStr);
+  writeInputToSessionPty(session, isDailySummary ? enrichedPrompt : promptText, true);
 
   // Broadcast to WS clients
   const broadcastMsg = JSON.stringify({
