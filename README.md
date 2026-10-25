@@ -1,211 +1,287 @@
 # ⚡ AGY Web Console (`agy-web`)
 
-Windows **ConPTY (Pseudo Console)** 파이프라인을 통해 로컬 웹 브라우저(`http://127.0.0.1:3080`)에서 실제 터미널을 열어 **Antigravity CLI (`agy`)**를 사용하는 것과 100% 동일한 경험을 제공하는 로컬 웹 콘솔 서버 및 브라우저 브릿지 플랫폼입니다.
-
-단순한 `stdin/stdout` 파이프가 아닌 Windows 네이티브 가상 콘솔(`ConPTY`)과 `xterm.js`를 WebSocket으로 직결하여 대화형 TUI, 24-bit TrueColor, 슬래시 명령어 자동완성, 한글 IME 입력, 마우스 스크롤 및 창 크기 동기화를 완벽하게 지원하며, **내부/브라우저 북마크 관리**, **현재 열린 브라우저 탭 조회**, **네이버 메일(`mail.naver.com`) 읽기 및 콘솔 전달** 기능까지 통합되어 있습니다.
+**Windows ConPTY 및 Linux PTY 파이프라인**을 통해 로컬 웹 브라우저(`http://127.0.0.1:3080`)에서 실제 터미널을 열어 **Antigravity CLI (`agy`)**를 사용하는 것과 100% 동일한 경험을 제공하는 웹 콘솔이자, **Nous Research 스타일의 Hermes Desktop 3-Pane 에이전트 워크스페이스**, **터미널 내 인라인 HTML/이미지 직접 출력**, **웹 입력 히스토리 시간순 요약**, **오전 4시 기준 금일 작업 자동 정리**, 그리고 **기능 선택 메뉴(모듈 관리자)**까지 완벽하게 통합된 올인원 AI 코딩 에이전트 관제 플랫폼입니다.
 
 ---
 
 ## 🏗️ 1. 시스템 아키텍처 (System Architecture)
 
 ```text
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                           Web Browser (http://127.0.0.1:3080)                    │
-│                                                                                  │
-│  ┌──────────────────────────────┐   ┌─────────────────────────────────────────┐  │
-│  │ xterm.js Terminal Viewport   │   │ 🧭 Browser & Mail Hub Drawer            │  │
-│  │ - FitAddon (자동 해상도 맞춤) │   │ - ⭐ 내부 북마크 바 & 관리 (bookmarks.json)│  │
-│  │ - Unicode11Addon (한글/TUI)  │   │ - 📧 네이버 메일 리더 (목록/본문 -> 콘솔) │  │
-│  │ - WebLinksAddon (한글 분리)   │   │ - 📚 로컬 Chrome/Edge/Whale/Brave 북마크 │  │
-│  │ - Ctrl+C / Ctrl+V 클립보드   │   │ - 🌐 열린 브라우저 탭/창 실시간 인스펙터  │  │
-│  └──────────────┬───────────────┘   └────────────────────┬────────────────────┘  │
-└─────────────────┼────────────────────────────────────────┼───────────────────────┘
-                  │ WebSocket (/ws?sessionId=...)          │ REST API (/api/*)
-                  ▼                                        ▼
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                        Node.js Local Server (server.js)                          │
-│                                                                                  │
-│  ┌─────────────────────────────────────────┐  ┌───────────────────────────────┐  │
-│  │ Always-On ConPTY Session Manager        │  │ Browser Bridge                │  │
-│  │ - 서버 시작 시 상시 세션(session-primary)│  │ (browser-bridge.js)           │  │
-│  │   백그라운드 선구동 및 자동 복구         │  │ - Chromium Bookmarks JSON 파서│  │
-│  │ - 250KB Scrollback 버퍼 (질의 시퀀스 필터)│  │ - CDP (9222) 실시간 탭/DOM제어│  │
-│  │ - /clear & cls 상태 인식 화면 초기화     │  │ - Win32 활성 브라우저 창 감지 │  │
-│  └──────────────┬──────────────────────────┘  └───────────────┬───────────────┘  │
-└─────────────────┼─────────────────────────────────────────────┼──────────────────┘
-                  │ node-pty (Windows ConPTY, TrueColor)        │
-                  ▼                                             ▼
-┌────────────────────────────────────────────┐  ┌──────────────────────────────────┐
-│ PowerShell (pwsh.exe / powershell.exe)     │  │ Local Browsers & Extension       │
-│  ├─ PATH 최상단: ./bin (Start-Process 래퍼)│  │ - ./extension (Chrome/Edge MV3)  │
-│  │               + Git Bash 우선 매핑      │  │ - mail.naver.com 메일/본문 추출  │
-│  └─ 상시 실행: agy -c (--continue)          │  │ - 열린 탭 실시간 동기화          │
-└────────────────────────────────────────────┘  └──────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                Web Browser (http://127.0.0.1:3080)                              │
+│                                                                                                 │
+│  [ 상단 헤더 & 모드 전환 ]                                                                       │
+│  🏛️ Hermes Agent (3-Pane)  │  ⚖️ 50:50 분할 (Split)  │  ⚡ 전체 터미널 (Terminal)  │  ⚙️ 기능 메뉴  │
+│                                                                                                 │
+│  ┌──────────────────────┬───────────────────────────────┬────────────────────────────────────┐  │
+│  │ 1. 좌측 제어 사이드바 │ 2. 중앙 에이전트 상호작용 피드 │ 3. 우측 인스펙터 레일 (Live Rail)  │  │
+│  │ - 에이전트 실시간 상태│ - 대화형 메시지 타임라인      │ - 💻 ConPTY 실시간 도킹 터미널    │  │
+│  │   (대기/추론/도구실행)│ - 사고(Thinking) 아코디언     │   (xterm.js + ANSI TrueColor)      │  │
+│  │ - LLM 모델 셀렉터    │ - 실시간 도구 실행 카드       │ - 📁 작업 디렉토리 파일 탐색기     │  │
+│  │   (Gemini/Claude 등) │   (Ran, Explored, Read, Edit) │   (코드 뷰어 모달 내장)            │  │
+│  │ - CWD 및 작업 디렉토리│ - 금일 작업 요약 카드         │ - 📊 도구 실행 감사 로그 (Audit)   │  │
+│  │ - ⚡ 빠른 스킬 목록   │ - 하단 고정 작문기(Composer)  │ - 🖼️ 실시간 미리보기 (HTML/이미지) │  │
+│  │   (사용자 정의 추가)  │   (Enter 전송 / Ctrl+C 중지)  │                                    │  │
+│  └──────────────────────┴───────────────────────────────┴────────────────────────────────────┘  │
+│                                                                                                 │
+│  ┌───────────────────────────────────────────────────────────────────────────────────────────┐  │
+│  │ 🧭 브라우저 & 도구 허브 / 모달 관리자                                                     │  │
+│  │ - ⭐ 북마크 바 / 📧 네이버 메일 리더 / ☕ 가입 카페 검색 / 🖼️ 이미지 뷰어 / 🌐 열린 탭   │  │
+│  │ - ⏱️ 웹 입력 히스토리 시간순 요약 보고서 모달 (Timeline & Markdown)                       │  │
+│  │ - ⚙️ 기능 선택 및 스킬 관리자 모달 (Feature Selection & Skill CRUD)                      │  │
+│  └───────────────────────────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────┬──────────────────────────────────────────┬────────────────────┘
+                                  │ WebSocket (/ws?sessionId=...)            │ REST API (/api/*)
+                                  ▼                                          ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                               Node.js Local Server (server.js)                                  │
+│                                                                                                 │
+│  ┌──────────────────────────────────────────────┐  ┌─────────────────────────────────────────┐  │
+│  │ Always-On PTY Session Manager                │  │ Agent & History Intelligence Engine     │  │
+│  │ - Windows: ConPTY (pwsh / powershell)        │  │ - PTY 스트림 상태 감지 (사고/도구/대기)  │  │
+│  │ - Linux: POSIX PTY (/bin/bash)               │  │ - OSC 7777 인라인 HTML / 이미지 디코더  │  │
+│  │ - 상시 세션 선구동 & 자동 복구               │  │ - 웹 입력 히스토리 자동 로깅 & 시간순   │  │
+│  │ - 대화 연속성 보장 (agy -c / --continue)     │  │   세션 클러스터링 요약 엔진           │  │
+│  │ - 4MB Scrollback 버퍼 & 질의 시퀀스 필터     │  │ - 오전 4시 기준 금일 작업 자동 집계     │  │
+│  └──────────────────────┬───────────────────────┘  │   (Web 입력 + Git Log + Tool 호출)      │  │
+│                         │                          └─────────────────────────────────────────┘  │
+└─────────────────────────┼───────────────────────────────────────────────────────────────────────┘
+                          │ node-pty (ConPTY / POSIX PTY, TrueColor)
+                          ▼
+┌────────────────────────────────────────────────────────┐
+│ Terminal Subshell & CLI                                │
+│  ├─ PATH 최상단: ./bin (agy-web-html, agy-web-image)    │
+│  └─ 상시 실행: agy -c (--continue)                      │
+└────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## ✨ 2. 주요 구현 기능 상세
+## ✨ 2. 핵심 구현 기능 상세
 
-### 2.1 네이티브 콘솔 파이프라인 및 상시(Always-On) 세션
-- **Windows ConPTY 직결 (`useConpty: true`)**:
-  - `xterm-256color` 및 `COLORTERM=truecolor` 환경을 구성하여 `agy`의 풀스크린/인라인 TUI 렌더링, 키보드 단축키, 화살표 탐색이 Windows Terminal과 동일하게 작동합니다.
+### 2.1 🏛️ Hermes Desktop 3-Pane 에이전트 작업 공간
+Nous Research의 **Hermes Desktop** UX 철학을 반영하여, 단순 터미널 뷰어를 넘어 에이전트의 사고와 행동을 투명하게 관제할 수 있는 3-Pane 인터페이스를 제공합니다.
+
+- **뷰 모드 전환 (View Switcher)**:
+  - `🏛️ Hermes Agent`: 좌측 사이드바 + 중앙 에이전트 상호작용 피드 + 우측 인스펙터 레일
+  - `⚖️ 50:50 분할 (Split)`: 좌측 대화 타임라인 + 우측 라이브 터미널 50:50 분할
+  - `⚡ 전체 터미널 (Terminal)`: 전체 화면 고속 xterm.js CLI 환경
+- **에이전트 활동 상태 감지 (Live Activity Detection)**:
+  - PTY 출력 스트림을 실시간 파싱하여 에이전트의 상태를 즉각 감지하고 UI에 뱃지와 애니메이션으로 표시합니다.
+  - 🟢 **대기 중 (Idle)** / 🟣 **사고 중 (Thinking)** / 🟡 **도구 실행 중 (Tool Executing)**
+- **실시간 도구 실행 카드 (Interactive Tool Cards)**:
+  - `Ran <cmd>`, `Explored`, `Read <file>`, `Edited <file>` 등의 호출을 감지하여 실행 상태 뱃지, 대상 경로, 실행 시간과 함께 접고 펼칠 수 있는 인터랙티브 카드로 렌더링합니다.
+- **하단 고정 프롬프트 작문기 (Composer)**:
+  - 내용에 맞춘 자동 높이 조절 텍스트에리어 (`Enter` 전송, `Shift+Enter` 줄바꿈).
+  - 즉각 인터럽트 전송 (`⏹ 중지` 버튼 / `Ctrl+C`).
+  - 빠른 슬래시 명령어 바 (`/help`, `/compact`, `/clear`).
+- **우측 인스펙터 레일 (Live Inspector Rail)**:
+  - 💻 **실시간 터미널**: xterm.js 터미널이 레일에 도킹되어 쉘 출력을 실시간으로 동기화합니다.
+  - 📁 **파일 탐색기**: 작업 디렉토리 내 폴더 및 파일을 트리 형태로 탐색하며, 클릭 시 내장 코드 뷰어 모달로 내용을 즉시 확인합니다.
+  - 📊 **실행 로그 (Audit Log)**: 에이전트가 실행한 도구와 시간의 감사 기록을 타임라인으로 제공합니다.
+  - 🖼️ **미리보기**: 생성된 HTML, 차트, 이미지를 렌더링합니다.
+
+---
+
+### 2.2 🖼️ 터미널 내 인라인 HTML & 이미지 직접 출력 (`OSC 7777`)
+별도의 분리된 팝업이나 웹 레이어가 아닌, **터미널 텍스트 스트림의 정확한 위치에 HTML과 이미지가 텍스트와 함께 출력되고 함께 스크롤**되는 혁신적인 인라인 렌더링 엔진입니다.
+
+- **동작 원리**:
+  - 사용자나 CLI 도구가 터미널에 `OSC 7777` 확장 이스케이프 시퀀스를 출력합니다:
+    ```bash
+    # HTML 직접 출력
+    echo "<table border='1'><tr><th>항목</th><th>상태</th></tr><tr><td>HTML 출력</td><td>정상</td></tr></table>" | agy-web-html
+
+    # 로컬/웹 이미지 직접 출력
+    agy-web-image /path/to/diagram.png
+    ```
+  - 포맷: `\x1b]7777;html;<base64_encoded_html>\x07`
+- **터미널 텍스트 흐름 일체화**:
+  - `xterm.js`의 줄바꿈 공간을 계산하고 줄 높이에 맞춘 컨테이너를 생성하여 터미널 스크롤, 버퍼 이동 시 텍스트와 완벽히 동기화되어 움직입니다.
+- **새로고침(F5) 복원력 (Continuity & Buffer Resilience)**:
+  - 스크롤백 버퍼에 인라인 아이템 상태가 보존되므로 브라우저를 새로고침하거나 세션에 재접속하더라도 레이아웃 왜곡이나 중복 렌더링 없이 원본 그대로 복원됩니다.
+
+---
+
+### 2.3 ⏱️ 웹 입력 히스토리 시간순 정리 & 요약 보고서
+웹 터미널과 에이전트 프롬프트에 입력된 모든 명령문을 자동으로 기록하고 분석하는 시간순 요약 엔진입니다.
+
+- **명령문 자동 분류**:
+  - 💬 **에이전트 지시/프롬프트**: 자연어 질의 및 개발 지시문
+  - 🚀 **CLI 쉘 명령**: `git`, `npm`, `node`, `curl`, `python` 등 실행 명령
+  - 💡 **슬래시 명령**: `/help`, `/compact`, `/clear` 등 TUI 슬래시 명령어
+- **지능형 연속 중복 압축 (Deduplication)**:
+  - 1분 이내에 연속으로 입력된 동일한 명령어나 엔터 입력을 `(×N회 반복)`으로 묶어 가독성을 높입니다.
+- **시간대별 세션 블록 클러스터링**:
+  - 20분 이상의 공백을 감지하여 날짜별 작업 세션(`세션 1: 15:58 ~ 16:00`)으로 자동 그룹화합니다.
+- **요약 보고서 모달 (`#historySummaryModal`)**:
+  - 🕒 **시간순 타임라인 뷰**: 날짜/세션별 작업 흐름 시각화 및 원클릭 재입력(`⌨️`), 복사(`📋`)
+  - 📝 **마크다운 보고서 뷰**: 깔끔하게 정리된 Markdown 보고서 열람
+  - 🤖 **에이전트에게 분석 요청**: 시간순 작업 내역을 바탕으로 사용자의 주요 의도, 핵심 성과 및 다음 권장 작업을 에이전트가 자동 분석하도록 프롬프트 전달
+  - 📋 **클립보드 복사** 및 📥 **`.md` 파일 다운로드** 지원
+- **정렬 기준 전환**: `[⬆️ 과거순 (시간순)]`과 `[⬇️ 최신순]` 토글 지원.
+
+---
+
+### 2.4 📅 오전 4시 기준 "금일 작업한 내용 정리" 자동 보고
+웹상에서 **"금일 작업한 내용 정리해줘"**, **"오늘 작업 정리해줘"**, **"오늘 한 일 요약해줘"** 등을 입력하면, **오늘 오전 04:00부터 현재까지 작업한 내용을 한눈에 정리**해 주는 특화 기능입니다.
+
+- **오전 4시 기준 업무 사이클 계산**:
+  - 개발자의 작업 패턴에 맞춰 당일 오전 04:00:00부터 현재 시각까지를 오늘 작업 범위로 자동 계산합니다. (새벽 4시 이전 입력 시 전날 오전 4시 기준 적용)
+- **3대 실제 작업 데이터 자동 수집**:
+  1. **웹 입력 질의/명령문**: 오전 4시 이후 웹 콘솔에 입력된 프롬프트 목록 (시간순)
+  2. **Git 커밋 내역**: 오전 4시 이후 생성된 커밋 목록 (`git log --since="today 04:00:00"`)
+  3. **도구 실행 내역**: 수정된 파일 및 실행된 도구 내역
+- **즉시 피드백 & 에이전트 인텔리전트 종합 보고**:
+  - 질문 전송 즉시 채팅 타임라인에 **`📅 금일 작업 정리 (오전 4시 ~ 현재)` 전용 카드**가 생성되어 집계된 원본 로그를 즉시 확인/복사할 수 있습니다.
+  - 동시에 수집된 실제 작업 로그 데이터가 에이전트(`agy`)에게 전달되어 **핵심 목표 요약, 시간대별 진행 내역, Git 커밋 변경점, 완료 결과물 및 향후 권장 작업** 순으로 체계적인 보고서가 자동 생성됩니다.
+
+---
+
+### 2.5 ⚙️ 기능 선택 메뉴 & 모듈 관리자 (Feature Manager)
+모든 스킬과 확장 도구들을 사용자의 입맛에 맞게 자유롭게 켜고 끄거나, 새 기능을 추가/삭제할 수 있는 관리자 시스템입니다.
+
+- **메뉴 진입 위치**:
+  - 상단 헤더 우측: `⚙️ 기능 메뉴`
+  - 북마크 툴바: `⚙️ 기능 설정`
+  - Hermes 좌측 사이드바: `⚙️ 기능 선택`
+- **3개 영역별 맞춤 기능 관리 (`#featureManagerModal`)**:
+  1. **⚡ 에이전트 스킬 관리 (Skills)**:
+     - **새 스킬 추가**: 스킬 이름, 카테고리, 에이전트 프롬프트를 입력하여 커스텀 빠른 스킬을 즉시 생성.
+     - **표시/숨김 토글**: 체크박스로 사이드바 표시 여부 즉시 제어.
+     - **스킬 삭제**: `🗑️` 삭제 버튼으로 불필요한 스킬 영구 제거.
+  2. **🧭 상단 도구/바 관리 (Toolbar & Hub Modules)**:
+     - `📅 금일 작업 정리`, `⏱️ 시간순 요약`, `＋ 북마크`, `📧 네이버 메일`, `☕ 가입 카페`, `📜 입력 히스토리`, `🖼️ 이미지 뷰어`, `🌐 열린 탭` 등 툴바 항목의 표시 여부를 체크박스로 제어.
+  3. **💻 인스펙터 패널 관리 (Inspector Rail)**:
+     - 우측 레일의 4대 탭(`💻 실시간 터미널`, `📁 파일 탐색기`, `📊 실행 로그`, `🖼️ 미리보기`)을 선택적으로 활성화.
+- **영구 저장 & 복원**:
+  - 모든 설정은 `localStorage`에 자동 영구 저장되며, `🔄 기본값 복원` 버튼으로 언제든 초기 상태로 되돌릴 수 있습니다.
+
+---
+
+### 2.6 네이티브 콘솔 파이프라인 및 상시(Always-On) 세션
+- **Windows ConPTY & Linux POSIX PTY 크로스 플랫폼 지원**:
+  - Windows: `node-pty` + `pwsh.exe` / `powershell.exe` (`useConpty: true`, `COLORTERM=truecolor`).
+  - Linux: `node-pty` + `/bin/bash` 가상 터미널.
 - **백그라운드 상시 프로세스 (`session-primary`)**:
-  - 브라우저가 접속할 때마다 PowerShell과 `agy`가 새로 켜지는 지연을 없애기 위해, **웹 서버(`server.js`)가 구동되는 즉시 백그라운드에서 상시 콘솔 세션을 미리 생성하고 `agy`를 실행**해 대기합니다.
-  - 브라우저를 닫았다가 다시 열거나 새로고침(`F5`)하더라도 기존에 실행 중인 `agy` 화면 상태에 끊김 없이 즉시 이어서 접속됩니다.
+  - 서버 구동 즉시 상시 콘솔 세션을 백그라운드에 미리 생성하고 `agy`를 실행하여, 브라우저 접속 지연(Cold Start)이 전혀 없습니다.
 - **대화 연속성 보장 (`agy -c` / `--continue`)**:
-  - `.session-continuity.json` 상태 파일을 통해 서버가 재시작되더라도 `agy -c` 옵션으로 직전 대화 컨텍스트를 자동으로 이어서 복원합니다.
-  - 상시 세션 프로세스가 종료될 경우 자동으로 백그라운드에서 재생성됩니다.
-- **다중 세션(탭) 및 작업 경로(CWD) 지정**:
-  - 상단 **`＋ 새 콘솔`** 및 **`📁 경로 지정`** 모달을 통해 원하는 로컬 프로젝트 폴더별로 여러 개의 독립된 PowerShell + `agy` 탭을 동시에 열어 작업할 수 있습니다. (탭 더블클릭 시 이름 변경 지원)
+  - `.session-continuity.json` 상태 파일을 통해 서버가 재시작되어도 직전 대화 컨텍스트를 자동으로 이어서 복원합니다.
+- **스마트 클립보드 & 화면 정리**:
+  - `Ctrl+V`: Bracketed Paste 지원으로 긴 코드 붙여넣기 시 뭉개짐 방지.
+  - `Ctrl+C`: 선택 영역 복사 / 시그널 인터럽트(`SIGINT`) 지능형 분기.
+  - `🧹 화면 지우기`: TUI 상태와 쉘 프롬프트 상태를 분기 감지하여 실제 버퍼 초기화.
 
-### 2.2 터미널 조작 편의성 개선 (`Ctrl+C`, `Ctrl+V`, 화면 클리어)
-- **스마트 `Ctrl+C` 및 `Ctrl+V` 붙여넣기**:
-  - **`Ctrl+V` / `Ctrl+Shift+V`**: 클립보드 텍스트를 읽어 `xterm.js`의 `term.paste()`로 전달함으로써 `agy` TUI의 Bracketed Paste 모드와 멀티라인 줄바꿈 정규화를 완벽히 지원합니다.
-  - **`Ctrl+C` / `Ctrl+Shift+C`**: 마우스로 드래그하여 선택한 텍스트가 있을 때는 클립보드로 복사하고 선택을 해제하며, 선택 영역이 없을 때는 콘솔 인터럽트 시그널(`\x03`, `SIGINT`)을 전송합니다.
-- **상태 인식 화면 지우기 (`🧹 화면 지우기`)**:
-  - 단순히 브라우저 캔버스만 지우면 다음 키 입력 시 `agy` TUI가 이전 대화 버퍼를 다시 그리는 문제를 해결하기 위해, 서버가 현재 프롬프트 상태를 판별합니다.
-  - `agy` TUI 내부일 때는 `Ctrl+U` -> `/clear` -> `Enter`를 순차 패킷으로 전송하여 `agy` 뷰포트와 대화 화면을 실제로 초기화하고, PowerShell 프롬프트(`PS C:\...>`) 상태일 때는 `cls`를 실행한 뒤 서버 스크롤백과 브라우저 스크롤백(`\x1b[2J\x1b[3J\x1b[H`)을 동시에 비웁니다.
+---
 
-### 2.3 스마트 URL 열기 및 중복 탭 방지
-- **Bash `Start-Process` / `open` / `xdg-open` 호환 래퍼 (`./bin/`)**:
-  - `agy` 내부의 `Bash` 도구가 Windows의 `WindowsApps\bash.exe`(WSL 스텁)를 호출해 `Start-Process: command not found` 오류가 발생하는 문제를 해결하기 위해, 세션 `PATH` 최상단에 `./bin` 래퍼 스크립트와 Git Bash 경로를 등록했습니다.
-  - `agy`가 `Start-Process "https://..."`를 실행하면 `/api/open-url`을 호출하여 현재 보고 있는 브라우저에서 즉시 해당 URL을 엽니다.
-- **터미널 내 URL 원클릭 열기 & 한글 조사 분리**:
-  - `agy`가 마우스 트래킹 모드(`?1000h`)를 켠 상태에서도 `Ctrl+클릭` 없이 **일반 마우스 좌클릭**만으로 링크가 열립니다.
-  - `https://mail.naver.com)을`처럼 URL 뒤에 한글 조사나 닫는 괄호가 붙어 있을 때 정규식과 `cleanTerminalUrl()`이 한글 조사 및 괄호를 자동으로 분리하여 정확한 주소로 이동합니다.
-  - `file:///...` 로컬 파일 링크 클릭 시 브라우저 보안 차단을 우회하여 서버가 Windows 탐색기/기본 앱(`explorer.exe`)으로 직접 파일을 열어줍니다.
-- **중복 탭 생성 원천 방지**:
-  - TUI가 화면을 다시 그릴 때 이전 대화 기록의 `Start-Process` 문자열을 재감지하지 않도록 차단했습니다.
-  - 동일한 URL(도메인+경로)을 다시 열 때는 `_blank`로 새 탭을 복제하지 않고, 결정론적 타겟 이름(`getStableTabTarget`) 및 열린 창 참조 맵(`openedTabWindows`)을 통해 **이미 열려 있는 탭으로 즉시 포커스를 이동(`existingWin.focus()`)**합니다.
-  - CDP 활성화 시에는 `/json/activate/:id`로 기존 탭을 직접 활성화합니다.
-
-### 2.4 내부 북마크 바 & 로컬 브라우저(Chrome/Edge/Whale/Brave) 북마크 연동
-- **빠른 내부 북마크 바 (`⭐ 북마크`)**:
-  - 툴바 하단에 상시 표시되며 `bookmarks.json`에 영구 저장됩니다.
-  - 북마크 클릭 시 해당 탭으로 이동하고, 우측 **`⌨️` 버튼** 클릭 시 **현재 활성화된 `agy` 콘솔 입력창에 해당 URL을 즉시 타이핑**해 줍니다.
-- **설치된 로컬 브라우저 북마크 자동 스캔 (`📚 브라우저 북마크`)**:
-  - 별도 설정 없이 PC에 설치된 **Google Chrome, Microsoft Edge, Naver Whale, Brave**의 모든 프로필(`Default`, `Profile *`) 내 `Bookmarks` JSON 파일을 직접 파싱하여 검색·열기·콘솔 입력·내부 북마크 저장을 지원합니다.
-
-### 2.5 현재 열린 브라우저 탭/창 인스펙터 (`🌐 열린 탭/창`)
-- **3단계 하이브리드 탭 감지**:
-  1. **실시간 전체 탭 (CDP 9222 포트 & 로컬 확장 프로그램)**: 열려 있는 모든 브라우저 탭의 정확한 제목과 URL을 실시간으로 표시합니다.
-  2. **Windows 프로세스 활성 창 제목**: 별도 설정 없이도 현재 실행 중인 `chrome`, `msedge`, `whale`, `brave`, `firefox` 프로세스의 활성 창 제목과 PID를 즉시 조회합니다.
-  3. **웹 콘솔에서 연 탭 & Chromium 세션(`Sessions/Session_*`, `Tabs_*`) URL 추출**: 최근 열린 탭 URL을 추출하여 바로 열거나 콘솔로 전달할 수 있습니다.
-
-### 2.6 네이버 메일(`mail.naver.com`) 리더 및 콘솔 전달 (`📧 네이버 메일`)
-- 열려 있는 네이버 메일 페이지에서 **메일 목록(안읽음 여부, 제목, 보낸사람, 날짜)**과 **현재 열려 있는 메일 본문**을 읽어와 웹 콘솔 우측 패널에 표시합니다.
-- **3가지 연동 방식 모두 지원**:
-  1. **북마크릿 (`📥 네이버 메일 → AGY 전송`)**: 현재 열려 있는 일반 브라우저를 재시작하거나 확장 프로그램을 설치할 필요 없이, 북마크 바에 드래그한 버튼을 네이버 메일 탭에서 클릭하면 즉시 메일 목록과 본문이 전송됩니다.
-  2. **Chrome/Edge 확장 프로그램 (`./extension`)**: `chrome://extensions`에서 로드하면 네이버 메일 접속 시마다 백그라운드에서 100% 자동으로 메일과 열린 탭 목록을 동기화합니다.
-  3. **CDP 연동 브라우저**: `[🔌 실시간 연동 브라우저로 네이버 메일 열기]` 클릭 시 네이버 메일 내부 JSON API(`/json/list`)와 DOM을 직접 제어하여 메일 목록 및 개별 본문(`📖 본문`)을 실시간으로 읽어옵니다.
-- **`🤖 목록 콘솔로 전달` / `🤖 본문 콘솔에 전달`**:
-  - 원클릭으로 최근 메일 목록 전체나 특정 메일 본문을 `agy` 프롬프트에 자동 입력하여 요약, 중요 메일 분류, 답장 초안 작성을 바로 지시할 수 있습니다.
+### 2.7 북마크, 브라우저 탭 & 네이버 서비스 허브
+- **로컬 브라우저 북마크 자동 스캔**: Chrome, Edge, Whale, Brave의 프로필 JSON을 직접 파싱하여 검색/열기 지원.
+- **열린 탭/창 실시간 인스펙터**: CDP(9222 포트), 로컬 확장 프로그램, 시스템 활성 창 프로세스를 융합하여 열려 있는 탭을 실시간 추적.
+- **네이버 메일(`mail.naver.com`) 리더**: 북마크릿, 확장 프로그램, CDP를 통해 안읽은 메일 목록 및 본문을 가져와 원클릭으로 `agy`에 전달.
+- **네이버 카페(`cafe.naver.com`) 검색**: 가입 카페 게시글 검색 결과를 수집하여 `agy`에 분석 지시.
 
 ---
 
 ## 📂 3. 프로젝트 디렉토리 구조
 
 ```text
-C:\Users\meesokim\agy-web\
-├── server.js                  # Express + WebSocket + node-pty(ConPTY) 메인 서버
-├── browser-bridge.js          # 내부 북마크, 로컬 브라우저 북마크/탭/세션 파서, CDP 및 네이버 메일 브릿지
-├── bookmarks.json             # 내부 북마크 영구 저장 파일 (자동 생성)
+agy-web/
+├── server.js                  # Express + WebSocket + PTY(ConPTY/Linux) 메인 서버 & REST API
+├── browser-bridge.js          # 내부 북마크, 로컬 브라우저 파서, CDP 및 네이버 서비스 브릿지
+├── bookmarks.json             # 내부 북마크 영구 저장 파일
+├── input-history.json         # 웹 콘솔 입력 히스토리 영구 저장 로그
 ├── .session-continuity.json   # 상시 세션 대화 연속성(-c) 추적 상태 파일
 ├── package.json               # 프로젝트 의존성 정의
-├── start.bat                  # PowerShell 실행 정책(ExecutionPolicy) 우회 원클릭 실행 배치 파일
-├── README.md                  # 프로젝트 상세 문서
-├── bin/                       # Bash 도구 호환용 URL 실행 래퍼 스크립트
-│   ├── Start-Process          # agy Bash 도구에서 Start-Process 호출 시 /api/open-url 연동
+├── start.bat                  # Windows 원클릭 실행 배치 파일
+├── README.md                  # 프로젝트 종합 가이드 문서
+├── bin/                       # CLI 및 도구 확장 래퍼 스크립트
+│   ├── agy-web-html           # 터미널 표준 입력 HTML을 OSC 7777 인라인 렌더링 시퀀스로 변환
+│   ├── agy-web-image          # 로컬/웹 이미지를 터미널 인라인 시퀀스로 변환
+│   ├── Start-Process          # agy Bash 도구에서 Start-Process 호출 시 웹 브라우저 열기 연동
 │   ├── open                   # macOS 스타일 open 명령 래퍼
 │   └── xdg-open               # Linux 스타일 xdg-open 명령 래퍼
-├── extension/                 # 일반 Chrome/Edge 브라우저 자동 동기화용 확장 프로그램 (Manifest V3)
-│   ├── manifest.json          # 확장 프로그램 매니페스트
-│   ├── background.js          # 열린 모든 브라우저 탭 실시간 동기화 워커
-│   └── content-naver-mail.js  # mail.naver.com 메일 목록 및 본문 자동 추출 스크립트
-└── public/                    # 프론트엔드 정적 파일
-    ├── index.html             # 메인 웹 콘솔 레이아웃, 북마크 바, 브라우저/메일 허브 드로어
-    ├── style.css              # 다크 테마 터미널 및 허브 UI 스타일시트
-    └── app.js                 # xterm.js 파이프라인, 단축키, 중복 탭 방지, 북마크/탭/메일 허브 로직
+├── extension/                 # Chrome/Edge 브라우저 자동 동기화용 확장 프로그램 (MV3)
+│   ├── manifest.json
+│   ├── background.js
+│   └── content-naver-mail.js
+└── public/                    # 프론트엔드 웹 애플리케이션
+    ├── index.html             # Hermes 3-Pane 데스크탑 레이아웃, 모달, 툴바 템플릿
+    ├── style.css              # 다크 테마, 3-Pane 그리드, 도구 카드, 타임라인 스타일
+    ├── app.js                 # 뷰 모드 전환, 실시간 도구 렌더링, 기능 관리자, WebSocket 파이프라인
+    └── vendor/                # xterm.js 및 fit/web-links/unicode11/image 애드온 로컬 번들
 ```
 
 ---
 
-## 🔌 4. REST API 및 WebSocket 명세
+## 🔌 4. REST API 명세 요약
 
-### 4.1 콘솔 세션 API
-| 메서드 | 경로 | 설명 |
-| :--- | :--- | :--- |
-| `GET` | `/api/sessions` | 활성 콘솔 세션 목록 조회 (세션이 없으면 상시 세션 자동 생성) |
-| `POST` | `/api/sessions` | 새 콘솔 세션 생성 (`{ cwd, title, cols, rows, autoRunAgy }`) |
-| `PATCH` | `/api/sessions/:id` | 세션 탭 이름 변경 (`{ title }`) |
-| `DELETE` | `/api/sessions/:id` | 세션 종료 및 ConPTY 프로세스 정리 |
-| `POST` | `/api/open-url` | URL 또는 로컬 `file://` 경로 열기 (`{ url, sessionId }`) |
-
-### 4.2 북마크, 브라우저 탭 & 네이버 메일 API
-| 메서드 | 경로 | 설명 |
-| :--- | :--- | :--- |
-| `GET` | `/api/bookmarks` | 내부 북마크 목록 조회 (`bookmarks.json`) |
-| `POST` | `/api/bookmarks` | 내부 북마크 추가 (`{ title, url, category }`) |
-| `PATCH` | `/api/bookmarks/:id` | 내부 북마크 수정 |
-| `DELETE` | `/api/bookmarks/:id` | 내부 북마크 삭제 |
-| `GET` | `/api/browser/bookmarks` | 로컬 설치 브라우저(Chrome, Edge, Whale, Brave) 북마크 전체 조회 |
-| `GET` | `/api/browser/tabs` | 열린 브라우저 탭/창 조회 (CDP + 확장 프로그램 + Windows 창 + 세션 파일) |
-| `POST` | `/api/browser/launch-cdp` | CDP(포트 9222) 및 확장 프로그램이 탑재된 브라우저 실행 |
-| `POST` | `/api/browser/extension-tabs` | Chrome/Edge 확장 프로그램으로부터 실시간 탭 목록 수신 |
-| `GET` | `/api/naver-mail` | 네이버 메일 목록 및 열린 메일 본문 조회 (`?readUrl=...` 지원) |
-| `POST` | `/api/naver-mail/sync` | 확장 프로그램 또는 북마크릿으로부터 네이버 메일 데이터 수신 |
-
-### 4.3 WebSocket 프로토콜 (`/ws?sessionId=<id>`)
-- **Server → Client**:
-  - `init`: `{ type: 'init', session, scrollback }` — 접속/새로고침 시 초기 메타데이터 및 정제된 스크롤백 전달
-  - `output`: `{ type: 'output', data }` — 실시간 ConPTY ANSI 출력 스트림
-  - `open_url`: `{ type: 'open_url', url }` — 콘솔 내부 명령으로 요청된 URL을 브라우저 탭에서 열기
-  - `exit`: `{ type: 'exit', exitCode, signal }` — 프로세스 종료 알림
-- **Client → Server**:
-  - `input`: `{ type: 'input', data }` — 사용자 키 입력 및 붙여넣기 데이터 전달
-  - `resize`: `{ type: 'resize', cols, rows }` — 브라우저 창 크기에 맞춘 ConPTY 크기 동기화
-  - `clear`: `{ type: 'clear' }` — 현재 프롬프트 상태(`agy` vs `PowerShell`)에 맞춘 화면 및 버퍼 초기화
+| 영역 | 메서드 | 경로 | 설명 |
+| :--- | :--- | :--- | :--- |
+| **Hermes** | `GET` | `/api/hermes/status` | 에이전트 활동 상태(대기/사고/도구) 및 최근 도구 호출 내역 조회 |
+| | `POST` | `/api/hermes/prompt` | 에이전트에 프롬프트 전송 (금일 작업 정리 의도 자동 인리치먼트) |
+| | `POST` | `/api/hermes/interrupt` | 에이전트 실행 중단 시그널(`Ctrl+C` / `\x03`) 전송 |
+| | `GET` | `/api/hermes/workspace` | 작업 디렉토리 폴더 및 파일 트리 조회 (`?dir=...`) |
+| | `GET` | `/api/hermes/file` | 파일 내용 미리보기 조회 (`?path=...`) |
+| **작업 요약** | `GET` | `/api/daily-work-summary` | 오늘 오전 4시부터 현재까지의 작업 집계 및 Markdown 요약 보고서 반환 |
+| | `GET` | `/api/input-history/summary` | 웹 입력 히스토리 시간순 정렬 및 타임라인 세션 클러스터링 요약 |
+| **히스토리** | `GET` | `/api/input-history` | 웹 콘솔 입력 히스토리 목록 조회 (`?sessionId=...&q=...`) |
+| | `POST` | `/api/input-history` | 새 입력 히스토리 기록 |
+| | `DELETE`| `/api/input-history/:id` | 특정 히스토리 항목 삭제 |
+| | `DELETE`| `/api/input-history` | 전체 히스토리 비우기 |
+| **콘솔 세션** | `GET` | `/api/sessions` | 활성 콘솔 세션 목록 조회 (없을 시 상시 세션 자동 생성) |
+| | `POST` | `/api/sessions` | 새 콘솔 세션 생성 (`{ cwd, title, cols, rows, autoRunAgy }`) |
+| | `PATCH` | `/api/sessions/:id` | 세션 탭 이름 변경 |
+| | `DELETE`| `/api/sessions/:id` | 세션 종료 및 프로세스 정리 |
+| | `POST` | `/api/send` | 활성 세션에 텍스트 또는 명령어 직접 주입 |
+| | `POST` | `/api/open-url` | URL 또는 로컬 `file://` 경로 열기 |
+| **북마크/탭** | `GET` | `/api/bookmarks` | 내부 북마크 목록 조회 |
+| | `POST` | `/api/bookmarks` | 내부 북마크 추가 |
+| | `GET` | `/api/browser/bookmarks` | 로컬 브라우저(Chrome/Edge/Whale/Brave) 북마크 조회 |
+| | `GET` | `/api/browser/tabs` | 열린 브라우저 탭/창 실시간 조회 |
+| | `GET` | `/api/naver-mail` | 네이버 메일 목록 및 본문 조회 |
 
 ---
 
 ## 🚀 5. 설치 및 실행 방법
 
-### 5.1 서버 실행
-PowerShell 실행 정책(`ExecutionPolicy`)에 구애받지 않도록 포함된 `start.bat` 또는 `node` 명령으로 바로 실행할 수 있습니다.
+### 5.1 사전 준비
+- **Node.js** v18 이상
+- **Antigravity CLI (`agy`)** 설치 권장 (`npm install -g antigravity-cli` 또는 공식 바이너리)
 
-```powershell
-cd C:\Users\meesokim\agy-web
-.\start.bat
-# 또는
+### 5.2 서버 실행
+```bash
+# 저장소 클론 및 폴더 이동
+cd /path/to/agy-web
+
+# 의존성 설치
+npm install
+
+# 서버 구동 (Linux / macOS)
 node server.js
+
+# Windows 원클릭 실행
+.\start.bat
 ```
 
-### 5.2 웹 콘솔 접속
-- 브라우저에서 **`http://127.0.0.1:3080`** 으로 접속합니다.
+### 5.3 웹 콘솔 접속
+- 웹 브라우저에서 **`http://127.0.0.1:3080`** 에 접속합니다.
 - 기본 포트(`3080`)를 변경하려면 환경 변수 `PORT`를 지정합니다:
-  ```powershell
-  $env:PORT=4000; node server.js
+  ```bash
+  PORT=4000 node server.js
   ```
 
 ---
 
-## 🛠️ 6. 전역 설치된 Antigravity Skills (`mattpocock/skills`)
+## 💡 6. 주요 사용 팁 및 바로가기
 
-`~/.gemini/config/skills/`(`C:\Users\meesokim\.gemini\config\skills\`) 경로에 [mattpocock/skills](https://github.com/mattpocock/skills)의 **27개 엔지니어링 및 생산성 스킬**이 함께 설치되어 있어 웹 콘솔 내 `agy`에서 즉시 호출할 수 있습니다.
-
-- **Engineering (20종)**: `/setup-matt-pocock-skills`, `/ask-matt`, `/grill-with-docs`, `/domain-modeling`, `/codebase-design`, `/improve-codebase-architecture`, `/to-spec`, `/to-tickets`, `/wayfinder`, `/tdd`, `/implement`, `/implement-spec`, `/diagnosing-bugs`, `/code-review`, `/pr`, `/prototype`, `/research`, `/triage`, `/retro`, `/wizard`
-- **Productivity (7종)**: `/grill-me`, `/grilling`, `/handoff`, `/teach`, `/to-questionnaire`, `/wait-what`, `/writing-for-agents`
-
----
-
-## 🔧 7. 주요 트러블슈팅 및 기술적 해결 내역
-
-1. **스크롤백 리플레이 시 TUI 화면 깨짐 및 모달 오작동 해결**:
-   - `agy` 구동 시 출력되는 터미널 기능 질의 시퀀스(`CSI ? u`, `OSC 7501`, `DSR 6n`)와 임시 대체 화면(`\x1b[?1049h ... \x1b[?1049l`)이 `scrollback`에 남아 있으면, 브라우저 재접속 시 `xterm.js`가 이에 응답 바이트를 `term.onData`로 역전송하여 `agy` 입력으로 들어가는 현상이 발생합니다.
-   - 이를 해결하기 위해 서버에서 질의 시퀀스 및 대체 화면 이전 버퍼를 필터링하고, 클라이언트에서도 `init` 리플레이 중에는 `onData` 송신을 음소거(`entry.isReplaying = true`)하도록 구현했습니다.
-2. **화면 지우기(`🧹`) 후 입력 시 이전 대화 재출력 해결**:
-   - 브라우저 로컬에서만 `term.clear()`를 호출하면 ConPTY 내부 화면 버퍼와 `agy` TUI 상태가 그대로 남아 다음 키 입력 시 이전 화면이 상단에 다시 그려집니다.
-   - 서버가 `agy` TUI 상태인지 PowerShell 프롬프트 상태인지 감지하여 `/clear` 또는 `cls`를 분리된 패킷으로 전달해 ConPTY와 `agy` 내부 뷰포트를 실제로 초기화하도록 해결했습니다.
-3. **PowerShell `npm.ps1` 실행 정책 차단 및 WSL `bash.exe` 충돌 해결**:
-   - ConPTY 스폰 시 `-ExecutionPolicy Bypass`를 기본 적용하고, 세션 `PATH`에 `./bin` 래퍼와 Git Bash를 `WindowsApps\bash.exe`보다 우선 배치하여 `Start-Process` 명령이 언제나 정상 작동하도록 구성했습니다.
+1. **금일 작업한 내용 정리**:
+   - 프롬프트 창에 **`금일 작업한 내용 정리해줘`**를 입력하거나 사이드바의 **`📅 금일 작업한 내용 정리`**를 클릭하면, 오늘 오전 4시 이후의 웹 입력, Git 커밋, 도구 실행이 종합 보고서로 자동 출력됩니다.
+2. **시간순 입력 히스토리 확인**:
+   - `📜 입력 히스토리` 드로어에서 **`⏱️ 시간순 요약`**을 클릭하면 시간대별 작업 블록과 Markdown 리포트를 즉시 열람/복사/다운로드할 수 있습니다.
+3. **나만의 커스텀 스킬 등록**:
+   - 상단 `⚙️ 기능 메뉴`를 열고 **`＋ 새 에이전트 스킬 추가`**에서 자주 사용하는 프롬프트를 등록하면 사이드바에 즉시 반영됩니다.
+4. **터미널 내 인라인 HTML 표 출력**:
+   - `agy` CLI 또는 쉘에서 HTML 내용을 `agy-web-html`로 파이프하면 터미널 본문 내에 깔끔한 표나 서식 카드가 실시간 렌더링됩니다:
+     ```bash
+     echo "<table border='1' style='border-collapse:collapse;padding:6px;'><tr><th>기능</th><th>상태</th></tr><tr><td>Hermes Desktop</td><td>정상 동작</td></tr></table>" | agy-web-html
+     ```
