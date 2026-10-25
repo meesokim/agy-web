@@ -182,6 +182,28 @@ Nous Research의 **Hermes Desktop** UX 철학을 반영하여, 단순 터미널 
 
 ---
 
+### 2.8 ⚡ 실시간 터미널 확인 프롬프트 자동 승인 (Auto-Approve)
+터미널에서 실행되는 CLI 도구나 AI 코딩 에이전트(`agy`)가 사용자에게 작업 확인 및 권한 승인(`y/n`, `[y/N]`, `Press Enter to continue`)을 요청할 때, 사람이 직접 키보드를 누르지 않아도 **지능적으로 감지하여 자동으로 승인(`y` 또는 `Enter`)을 전송**하는 고속 자동화 기능입니다.
+
+- **지능형 다국어 프롬프트 패턴 매칭**:
+  - `[y/N]`, `(y/n)`, `[Y/n]`, `[yes/no]`, `(yes/no)`, `[예/아니오]`, `(예/아니오)`
+  - 한국어 승인문: `계속하시겠습니까?`, `진행하시겠습니까?`, `실행하시겠습니까?`, `승인하시겠습니까?`, `덮어쓰시겠습니까?`
+  - 영어 확인문: `proceed?`, `continue?`, `allow?`, `approve?`, `confirm?`, `apply?`, `overwrite?`, `are you sure?`
+  - 엔터 확인문: `Press [Enter] to continue`, `엔터를 누르세요/누르시오`
+- **안전한 디바운스 및 중복 방지 (Debounce & Cooldown Engine)**:
+  - 프롬프트 출력 후 250ms 디바운스를 거쳐 터미널 화면이 완전히 그려진 뒤 입력을 전송합니다.
+  - 동일한 프롬프트가 터미널 스크롤백에 남아 있더라도 커서 위치(Tail) 및 8초 쿨다운을 적용하여 중복 전송이나 무한 루프를 방지합니다.
+- **다중 UI 토글 및 시각 피드백**:
+  1. **상단 헤더 툴바**: `⚡ 자동 승인: ON/OFF` 즉시 토글 버튼
+  2. **Hermes 좌측 사이드바**: 터미널 설정 카드 내 슬라이더 스위치
+  3. **우측 레일 터미널 상단**: `⚡ 자동승인 ON/OFF` 버튼
+  4. **토스트 알림 & 감사 로그**: 자동 승인 발생 시 화면 우하단에 매칭된 문구와 입력키 알림 팝업이 뜨고, Hermes 실행 로그에 `AutoApprove` 기록이 남습니다.
+- **API 및 원격 제어**:
+  - REST API: `POST /api/sessions/:id/auto-approve` (`{ "enabled": true/false }`)
+  - WebSocket: `{ "type": "set_auto_approve", "enabled": true/false }` 양방향 동기화.
+
+---
+
 ## 📂 3. 프로젝트 디렉토리 구조
 
 ```text

@@ -95,6 +95,9 @@
       </div>
 
       <div class="toolbar-right">
+        <button class="btn btn-chip active" id="btnToggleAutoApprove" title="실시간 터미널 사용자 입력 확인 프롬프트(y/n, 엔터, 계속 등) 자동 승인 켜기/끄기">
+          ⚡ 자동 승인: ON
+        </button>
         <button class="btn btn-chip" id="btnRunAgy" title="현재 PowerShell 콘솔에 'agy' 명령어 전송">
           🚀 agy 실행
         </button>
@@ -140,6 +143,22 @@
               <option value="o3-mini">OpenAI o3-mini</option>
               <option value="deepseek-r1">DeepSeek R1</option>
             </select>
+          </div>
+
+          <div class="hermes-sidebar-section">
+            <div class="hermes-toggle-card" id="cardAutoApproveToggle">
+              <div class="toggle-card-label">
+                <span class="toggle-icon">⚡</span>
+                <div class="toggle-text">
+                  <div class="toggle-title">자동 승인 (Auto-Approve)</div>
+                  <div class="toggle-sub">확인(y/n, 엔터) 자동 승인</div>
+                </div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="checkAutoApprove" checked />
+                <span class="slider"></span>
+              </label>
+            </div>
           </div>
 
           <div class="hermes-sidebar-section">
@@ -231,7 +250,10 @@
           <div class="hermes-rail-panel active" id="railPanelTerminal">
             <div class="rail-panel-bar">
               <span class="rail-bar-title">PTY ConPTY 실시간 터미널</span>
-              <button type="button" class="btn btn-chip btn-sm" id="btnPopoutTerminal" title="전체 터미널 모드로 전환">⚡ 전체화면</button>
+              <div class="rail-bar-actions">
+                <button type="button" class="btn btn-chip btn-sm active" id="btnRailAutoApprove" title="실시간 터미널 확인 프롬프트(y/n) 자동 승인 토글">⚡ 자동승인 ON</button>
+                <button type="button" class="btn btn-chip btn-sm" id="btnPopoutTerminal" title="전체 터미널 모드로 전환">⚡ 전체화면</button>
+              </div>
             </div>
             <div class="rail-terminal-host" id="railTerminalHost"></div>
           </div>

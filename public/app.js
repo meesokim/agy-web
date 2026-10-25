@@ -21,6 +21,11 @@
   const btnNewSessionCustom = document.getElementById('btnNewSessionCustom');
   const btnEmptyCreate = document.getElementById('btnEmptyCreate');
 
+  const btnToggleAutoApprove = document.getElementById('btnToggleAutoApprove');
+  const checkAutoApprove = document.getElementById('checkAutoApprove');
+  const btnRailAutoApprove = document.getElementById('btnRailAutoApprove');
+  let autoApproveEnabled = localStorage.getItem('agy_web_auto_approve') !== 'false';
+
   const btnRunAgy = document.getElementById('btnRunAgy');
   const btnSendHelp = document.getElementById('btnSendHelp');
   const btnSendCtrlC = document.getElementById('btnSendCtrlC');
@@ -455,6 +460,9 @@
               sessionInlineItems.set(it.id, it);
             }
           }
+          if (msg.session && msg.session.autoApprove !== undefined) {
+            updateAutoApproveUI(msg.session.autoApprove);
+          }
           if (msg.agentActivity) {
             handleHermesAgentStatus(msg.agentActivity);
           }
@@ -479,6 +487,10 @@
             renderTabs();
             updateToolbarStatus();
           }
+        } else if (msg.type === 'auto_approve_changed') {
+          updateAutoApproveUI(msg.enabled);
+        } else if (msg.type === 'auto_approved') {
+          handleAutoApprovedNotification(msg);
         } else if (msg.type === 'hermes_agent_status') {
           handleHermesAgentStatus(msg);
         } else if (msg.type === 'hermes_prompt_dispatched') {
@@ -2711,6 +2723,73 @@
     hermesChatFeed.scrollTop = hermesChatFeed.scrollHeight;
   }
 
+  function updateAutoApproveUI(enabled) {
+    autoApproveEnabled = Boolean(enabled);
+    localStorage.setItem('agy_web_auto_approve', String(autoApproveEnabled));
+
+    if (btnToggleAutoApprove) {
+      btnToggleAutoApprove.textContent = autoApproveEnabled ? '⚡ 자동 승인: ON' : '⚡ 자동 승인: OFF';
+      btnToggleAutoApprove.classList.toggle('active', autoApproveEnabled);
+      btnToggleAutoApprove.classList.toggle('disabled', !autoApproveEnabled);
+    }
+    if (btnRailAutoApprove) {
+      btnRailAutoApprove.textContent = autoApproveEnabled ? '⚡ 자동승인 ON' : '⚡ 자동승인 OFF';
+      btnRailAutoApprove.classList.toggle('active', autoApproveEnabled);
+      btnRailAutoApprove.classList.toggle('disabled', !autoApproveEnabled);
+    }
+    if (checkAutoApprove) {
+      checkAutoApprove.checked = autoApproveEnabled;
+    }
+  }
+
+  function setAutoApproveMode(enabled) {
+    updateAutoApproveUI(enabled);
+    const active = activeSessionId ? clientSessions.get(activeSessionId) : null;
+    if (active && active.ws && active.ws.readyState === WebSocket.OPEN) {
+      active.ws.send(JSON.stringify({ type: 'set_auto_approve', enabled }));
+    }
+    fetch(`/api/sessions/${encodeURIComponent(activeSessionId || 'session-primary')}/auto-approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }).catch(() => {});
+  }
+
+  let autoApproveToastTimer = null;
+  function showAutoApproveToast(matched, input) {
+    let toast = document.getElementById('autoApproveToast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'autoApproveToast';
+      toast.className = 'auto-approve-toast';
+      document.body.appendChild(toast);
+    }
+    toast.innerHTML = `
+      <span style="font-size:16px;">⚡</span>
+      <div>
+        <div style="font-weight:700;color:#56d364;">터미널 확인 프롬프트 자동 승인 완료</div>
+        <div style="font-size:11px;color:#c9d1d9;font-family:monospace;margin-top:2px;">
+          ${escapeHtml(matched)} &rarr; <strong>'${input === 'Enter' ? '[Enter]' : 'y'}'</strong>
+        </div>
+      </div>
+    `;
+    toast.hidden = false;
+    clearTimeout(autoApproveToastTimer);
+    autoApproveToastTimer = setTimeout(() => {
+      toast.hidden = true;
+    }, 3500);
+  }
+
+  function handleAutoApprovedNotification(msg) {
+    showAutoApproveToast(msg.matched || '', msg.input || 'y');
+    appendHermesToolCard({
+      id: `auto-appr-${Date.now().toString(36)}`,
+      action: 'AutoApprove',
+      target: `${msg.matched} → [${msg.input}]`,
+      status: 'completed',
+    });
+  }
+
   function appendHermesMessage(entry) {
     if (!hermesChatFeed || !entry) return;
     if (entry.id && renderedMessageIds.has(entry.id)) return;
@@ -3074,6 +3153,18 @@
         fileViewerModal.hidden = true;
       }
     });
+
+    // 11. Auto-Approve Confirmation Prompts Toggle Listeners
+    btnToggleAutoApprove?.addEventListener('click', () => {
+      setAutoApproveMode(!autoApproveEnabled);
+    });
+    btnRailAutoApprove?.addEventListener('click', () => {
+      setAutoApproveMode(!autoApproveEnabled);
+    });
+    checkAutoApprove?.addEventListener('change', () => {
+      setAutoApproveMode(Boolean(checkAutoApprove.checked));
+    });
+    updateAutoApproveUI(autoApproveEnabled);
   }
 
   // =========================================================================
@@ -3142,6 +3233,7 @@
   const DEFAULT_TOOLBAR_MODULES = [
     { id: 'mod-daily', label: '📅 금일 작업 정리', selector: '#btnQuickDailySummary', enabled: true },
     { id: 'mod-history-summary', label: '⏱️ 시간순 요약', selector: '#btnQuickHistorySummary', enabled: true },
+    { id: 'mod-auto-approve', label: '⚡ 실시간 자동 승인', selector: '#btnToggleAutoApprove', enabled: true },
     { id: 'mod-bookmark-add', label: '＋ 북마크 추가', selector: '#btnQuickAddBookmark', enabled: true },
     { id: 'mod-naver-mail', label: '📧 네이버 메일', selector: '#btnOpenNaverMailReader', enabled: true },
     { id: 'mod-naver-cafe', label: '☕ 가입 카페', selector: '#btnOpenNaverCafeSearch', enabled: true },
@@ -3235,6 +3327,8 @@
       btn.addEventListener('click', () => {
         if (skill.action === 'openHistorySummaryModal') {
           openHistorySummaryModal();
+        } else if (skill.action === 'toggleAutoApprove') {
+          setAutoApproveMode(!autoApproveEnabled);
         } else if (skill.prompt) {
           if (hermesPromptInput) {
             hermesPromptInput.value = skill.prompt;

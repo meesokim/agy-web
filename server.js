@@ -561,6 +561,99 @@ function markContinuityActive() {
   } catch (_) {}
 }
 
+function checkAndAutoApprovePrompt(session, plainChunk) {
+  if (!session || session.exited || session.autoApprove === false) return;
+  const now = Date.now();
+  if (now - (session.lastAutoApproveTime || 0) < 1500) {
+    return;
+  }
+
+  // Extract recent tail from scrollback and current chunk (up to 500 chars)
+  const tailBuffer = (
+    session.scrollback.slice(-500).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '') +
+    ' ' +
+    plainChunk
+  ).slice(-500);
+
+  // Common CLI confirmation prompt patterns:
+  // 1. [y/n], (y/n), [y/N], (y/N), [Y/n], [yes/no], (yes/no), [예/아니오], (예/아니오)
+  // 2. Korean questions: 계속하시겠습니까, 진행하시겠습니까, 실행하시겠습니까, 승인하시겠습니까, 덮어쓰시겠습니까
+  // 3. English questions: proceed?, continue?, allow?, approve?, confirm?, apply?, are you sure?, overwrite?
+  const CONFIRM_Y_REGEX =
+    /(?:\[[Yy]\/[Nn]\]|\([Yy]\/[Nn]\)|\[(?:yes|no)\]|\((?:yes|no)\)|\[예\/아니오\]|\(예\/아니오\)|\b(?:계속|진행|실행|승인|덮어쓰|저장)하시겠습니까|\b(?:proceed|continue|allow|approve|confirm|apply|overwrite)\b[^\r\n?]*\?|\bare\s+you\s+sure\b[^\r\n?]*\?)/i;
+
+  // Press Enter to continue
+  const CONFIRM_ENTER_REGEX =
+    /(?:press\s+(?:enter|return)\s+to\s+continue|press\s+\[?enter\]?\s+to|\b엔터를\s*누르(?:시오|세요))/i;
+
+  let responseInput = null;
+  let matchedStr = '';
+  let matchObj = null;
+
+  const matchY = tailBuffer.match(CONFIRM_Y_REGEX);
+  if (matchY) {
+    matchObj = matchY;
+    responseInput = 'y\r';
+    matchedStr = matchY[0].trim();
+  } else {
+    const matchEnter = tailBuffer.match(CONFIRM_ENTER_REGEX);
+    if (matchEnter) {
+      matchObj = matchEnter;
+      responseInput = '\r';
+      matchedStr = matchEnter[0].trim();
+    }
+  }
+
+  if (responseInput && matchObj) {
+    // Only auto-approve if the prompt is at the active cursor end (only whitespace/colons after it)
+    const afterPrompt = tailBuffer.slice(matchObj.index + matchObj[0].length).replace(/[\s\r\n:?]/g, '');
+    if (afterPrompt.length > 5) {
+      return; // Stale prompt in history, not currently waiting for input
+    }
+
+    // Cooldown for the same prompt to avoid repeating approval on the same question
+    if (session.lastApprovedMatched === matchedStr && now - (session.lastAutoApproveTime || 0) < 8000) {
+      return;
+    }
+
+    session.lastAutoApproveTime = now;
+    session.lastApprovedMatched = matchedStr;
+
+    clearTimeout(session.autoApproveTimer);
+    session.autoApproveTimer = setTimeout(() => {
+      if (session.exited) return;
+
+      session.ptyProcess.write(responseInput);
+
+      // Record in recent tool calls for visibility
+      if (session.agentActivity) {
+        session.agentActivity.recentToolCalls.unshift({
+          id: `auto-appr-${Date.now().toString(36)}`,
+          action: 'AutoApprove',
+          target: `${matchedStr} → ${responseInput === '\r' ? '[Enter]' : '[y]'}`,
+          timestamp: new Date().toISOString(),
+          status: 'completed',
+        });
+      }
+
+      // Broadcast notification to all connected clients
+      const noticePayload = JSON.stringify({
+        type: 'auto_approved',
+        sessionId: session.id,
+        matched: matchedStr,
+        input: responseInput === '\r' ? 'Enter' : 'y',
+        timestamp: new Date().toISOString(),
+      });
+
+      for (const client of session.clients) {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(noticePayload);
+        }
+      }
+    }, 250); // 250ms debounce
+  }
+}
+
 function createSession({
   id: customId,
   cwd,
@@ -609,6 +702,9 @@ function createSession({
     agyTriggered: false,
     agyBootCleaned: false,
     compactLogs: true,
+    autoApprove: true,
+    lastAutoApproveTime: 0,
+    autoApproveTimer: null,
     agentActivity: {
       status: 'idle',
       currentTool: null,
@@ -774,6 +870,11 @@ function createSession({
       });
     }
 
+    // Auto-Approve confirmation prompts in real-time terminal
+    if (session.autoApprove !== false && !session.exited) {
+      checkAndAutoApprovePrompt(session, plain);
+    }
+
     // Trigger `agy` automatically once the initial shell stream starts
     if (session.autoRunAgy && !session.agyTriggered) {
       session.agyTriggered = true;
@@ -850,6 +951,7 @@ function serializeSession(session) {
     exited: session.exited,
     exitCode: session.exitCode,
     clientCount: session.clients.size,
+    autoApprove: session.autoApprove !== false,
     agentActivity: session.agentActivity || {
       status: 'idle',
       currentTool: null,
@@ -1563,6 +1665,33 @@ function handleSendToSession(req, res) {
 app.post('/api/send', handleSendToSession);
 app.post('/api/sessions/:id/send', handleSendToSession);
 
+// REST API: Set or toggle Auto-Approve mode for a session
+function handleSetAutoApprove(req, res) {
+  const targetId = req.params.id || req.body?.sessionId || PRIMARY_SESSION_ID;
+  const session = sessions.get(targetId) || sessions.values().next().value;
+  if (!session) {
+    return res.status(404).json({ error: '세션을 찾을 수 없습니다.' });
+  }
+  const { enabled } = req.body || {};
+  session.autoApprove = enabled !== undefined ? Boolean(enabled) : !session.autoApprove;
+
+  const payload = JSON.stringify({
+    type: 'auto_approve_changed',
+    sessionId: session.id,
+    enabled: session.autoApprove,
+  });
+  for (const client of session.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  }
+
+  res.json({ ok: true, sessionId: session.id, autoApprove: session.autoApprove });
+}
+
+app.post('/api/auto-approve', handleSetAutoApprove);
+app.post('/api/sessions/:id/auto-approve', handleSetAutoApprove);
+
 // REST API: Delete / terminate session
 app.delete('/api/sessions/:id', (req, res) => {
   const session = sessions.get(req.params.id);
@@ -1866,6 +1995,18 @@ wss.on('connection', (ws, req) => {
         if (!session.exited && typeof msg.data === 'string') {
           processSessionInputForHistory(session, msg.data);
           session.ptyProcess.write(msg.data);
+        }
+      } else if (msg.type === 'set_auto_approve') {
+        session.autoApprove = Boolean(msg.enabled);
+        const autoMsg = JSON.stringify({
+          type: 'auto_approve_changed',
+          sessionId: session.id,
+          enabled: session.autoApprove,
+        });
+        for (const client of session.clients) {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(autoMsg);
+          }
         }
       } else if (msg.type === 'resize') {
         const cols = Math.max(20, Math.min(500, Number(msg.cols) || session.cols));
