@@ -137,8 +137,11 @@ const recentImages = [];
 function compactTerminalBuffer(input) {
   if (!input || typeof input !== 'string') return '';
   // 1. Remove intermediate/stale prompt boxes with 'esc to cancel'
-  const stalePromptRe = /(?:\r?\n)?(?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{10,}(?:\x1b\[[0-9;?]*[a-zA-Z])*\r?\n(?:\x1b\[[0-9;?]*[a-zA-Z])*>[\s\S]*?(?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{10,}(?:\x1b\[[0-9;?]*[a-zA-Z])*\r?\n(?:\x1b\[[0-9;?]*[a-zA-Z])*esc to cancel[^\r\n]*(?:\r?\n)?/g;
-  let text = input.replace(stalePromptRe, '');
+  let text = input;
+  if (text.includes('esc to cancel')) {
+    const stalePromptRe = /(?:\r?\n)?(?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{10,}(?:\x1b\[[0-9;?]*[a-zA-Z])*\r?\n(?:\x1b\[[0-9;?]*[a-zA-Z])*>[\s\S]*?(?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{10,}(?:\x1b\[[0-9;?]*[a-zA-Z])*\r?\n(?:\x1b\[[0-9;?]*[a-zA-Z])*esc to cancel[^\r\n]*(?:\r?\n)?/g;
+    text = text.replace(stalePromptRe, '');
+  }
 
   // 2. Process cursor-up rewrites (\r\x1b[(\d+)A) when text contains ANSI rewrites
   if (text.length > 2000 && text.includes('\x1b[')) {

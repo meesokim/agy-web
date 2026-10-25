@@ -448,8 +448,11 @@
     function compactTerminalProgress(raw) {
       if (!raw || typeof raw !== 'string') return '';
       // 1. Remove intermediate/stale prompt boxes with 'esc to cancel'
-      const stalePromptRe = /(?:\r?\n)?(?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{10,}(?:\x1b\[[0-9;?]*[a-zA-Z])*\r?\n(?:\x1b\[[0-9;?]*[a-zA-Z])*>[\s\S]*?(?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{10,}(?:\x1b\[[0-9;?]*[a-zA-Z])*\r?\n(?:\x1b\[[0-9;?]*[a-zA-Z])*esc to cancel[^\r\n]*(?:\r?\n)?/g;
-      let text = raw.replace(stalePromptRe, '');
+      let text = raw;
+      if (text.includes('esc to cancel')) {
+        const stalePromptRe = /(?:\r?\n)?(?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{10,}(?:\x1b\[[0-9;?]*[a-zA-Z])*\r?\n(?:\x1b\[[0-9;?]*[a-zA-Z])*>[\s\S]*?(?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{10,}(?:\x1b\[[0-9;?]*[a-zA-Z])*\r?\n(?:\x1b\[[0-9;?]*[a-zA-Z])*esc to cancel[^\r\n]*(?:\r?\n)?/g;
+        text = text.replace(stalePromptRe, '');
+      }
 
       // 2. Process cursor-up rewrites (\r\x1b[(\d+)A) when text contains ANSI rewrites
       if (text.length > 2000 && text.includes('\x1b[')) {
@@ -479,29 +482,32 @@
       }
 
       // 3. Collapse stacked / consecutive horizontal divider lines (linear pass, O(N), zero backtracking)
-      const lines = text.split('\n');
-      const result = [];
-      let prevIsBorder = false;
+      if (text.includes('─') || text.includes('━') || text.includes('═')) {
+        const lines = text.split('\n');
+        const result = [];
+        let prevIsBorder = false;
 
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const plain = line.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').trim();
-        const isBorder = /^[─━═-]{6,}$/.test(plain);
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const plain = line.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').trim();
+          const isBorder = /^[─━═-]{6,}$/.test(plain);
 
-        if (isBorder) {
-          if (!prevIsBorder) {
+          if (isBorder) {
+            if (!prevIsBorder) {
+              result.push(line);
+              prevIsBorder = true;
+            }
+          } else {
+            if (plain.length > 0) {
+              prevIsBorder = false;
+            }
             result.push(line);
-            prevIsBorder = true;
           }
-        } else {
-          if (plain.length > 0) {
-            prevIsBorder = false;
-          }
-          result.push(line);
         }
+        return result.join('\n');
       }
 
-      return result.join('\n');
+      return text;
     }
 
     ws.onmessage = (event) => {
@@ -530,15 +536,39 @@
           entry.fitAddon.fit();
           entry.term.reset();
           if (msg.scrollback) {
-            entry.term.write(compactTerminalProgress(msg.scrollback), () => {
-              entry.isReplaying = false;
-              entry.initialized = true;
-              renderTabs();
-              updateToolbarStatus();
-            });
+            const cleaned = compactTerminalProgress(msg.scrollback);
+            const lines = cleaned.split('\n');
+            entry.allHistoryLines = lines;
+
+            // Instantly render recent tail (2x terminal rows, min 80 lines) so reload is lightning-fast
+            const INITIAL_LINES = Math.max(80, (entry.meta?.rows || 38) * 2);
+
+            if (lines.length <= INITIAL_LINES) {
+              entry.loadedLineStart = 0;
+              entry.term.write(cleaned, () => {
+                entry.isReplaying = false;
+                entry.initialized = true;
+                updateScrollIndicator(entry);
+                renderTabs();
+                updateToolbarStatus();
+              });
+            } else {
+              entry.loadedLineStart = lines.length - INITIAL_LINES;
+              const recentChunk = lines.slice(entry.loadedLineStart).join('\n');
+              entry.term.write(recentChunk, () => {
+                entry.isReplaying = false;
+                entry.initialized = true;
+                updateScrollIndicator(entry);
+                renderTabs();
+                updateToolbarStatus();
+              });
+            }
           } else {
+            entry.allHistoryLines = [];
+            entry.loadedLineStart = 0;
             entry.isReplaying = false;
             entry.initialized = true;
+            updateScrollIndicator(entry);
             renderTabs();
             updateToolbarStatus();
           }
@@ -557,7 +587,14 @@
         } else if (msg.type === 'today_work_summary_card') {
           renderTodayWorkSummaryCard(msg.summary);
         } else if (msg.type === 'output') {
-          entry.term.write(compactTerminalProgress(msg.data));
+          const processed = compactTerminalProgress(msg.data);
+          if (Array.isArray(entry.allHistoryLines)) {
+            const newLines = processed.split('\n');
+            for (let i = 0; i < newLines.length; i++) {
+              entry.allHistoryLines.push(newLines[i]);
+            }
+          }
+          entry.term.write(processed);
         } else if (msg.type === 'open_url') {
           if (msg.url) {
             openTerminalLink(msg.url, true);
@@ -622,6 +659,49 @@
     };
   }
 
+  function updateScrollIndicator(entry) {
+    if (!entry || !entry.historyBadge) return;
+    const remaining = entry.loadedLineStart || 0;
+    if (remaining > 0) {
+      entry.historyBadge.innerHTML = `⬆️ 이전 내용 더보기 (위로 스크롤 또는 클릭 · <b>${remaining}줄</b> 남음)`;
+      entry.historyBadge.hidden = false;
+    } else {
+      entry.historyBadge.hidden = true;
+    }
+  }
+
+  function loadOlderHistoryChunk(entry, chunkSize = 120) {
+    if (
+      !entry ||
+      !Array.isArray(entry.allHistoryLines) ||
+      entry.loadedLineStart <= 0 ||
+      entry.isLoadingOlderHistory ||
+      entry.isReplaying
+    ) {
+      return false;
+    }
+    entry.isLoadingOlderHistory = true;
+
+    const prevStart = entry.loadedLineStart;
+    const newStart = Math.max(0, prevStart - chunkSize);
+    const addedLinesCount = prevStart - newStart;
+    entry.loadedLineStart = newStart;
+
+    // Record current viewport position so we can preserve it
+    const currentViewportY = entry.term.buffer.active.viewportY;
+    const chunkToRender = entry.allHistoryLines.slice(newStart).join('\n');
+
+    entry.term.reset();
+    entry.term.write(chunkToRender, () => {
+      const targetY = Math.max(0, currentViewportY + addedLinesCount);
+      entry.term.scrollToLine(targetY);
+      entry.isLoadingOlderHistory = false;
+      updateScrollIndicator(entry);
+    });
+
+    return true;
+  }
+
   /**
    * Ensure a client-side terminal pane & WebSocket exist for a server session.
    */
@@ -639,17 +719,54 @@
 
     const { term, fitAddon } = createTerminalInstance(paneEl, sessionMeta.id);
 
+    const historyBadge = document.createElement('div');
+    historyBadge.className = 'terminal-history-badge';
+    historyBadge.hidden = true;
+    historyBadge.title = '클릭하거나 위로 스크롤하면 이전 터미널 내용을 추가로 불러옵니다.';
+    paneEl.appendChild(historyBadge);
+
     const entry = {
       meta: sessionMeta,
       term,
       fitAddon,
       paneEl,
+      historyBadge,
+      allHistoryLines: [],
+      loadedLineStart: 0,
+      isLoadingOlderHistory: false,
       ws: null,
       connected: false,
       initialized: false,
       isReplaying: false,
       reconnectTimer: null,
     };
+
+    historyBadge.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      loadOlderHistoryChunk(entry, 150);
+    });
+
+    paneEl.addEventListener(
+      'wheel',
+      (ev) => {
+        if (ev.deltaY < 0 && entry.loadedLineStart > 0 && !entry.isLoadingOlderHistory) {
+          const viewportY = entry.term.buffer.active.viewportY;
+          if (viewportY <= 2) {
+            loadOlderHistoryChunk(entry, 120);
+          }
+        }
+      },
+      { passive: true }
+    );
+
+    term.onScroll(() => {
+      if (entry.loadedLineStart > 0 && !entry.isLoadingOlderHistory && !entry.isReplaying) {
+        const viewportY = entry.term.buffer.active.viewportY;
+        if (viewportY <= 3) {
+          loadOlderHistoryChunk(entry, 120);
+        }
+      }
+    });
 
     clientSessions.set(sessionMeta.id, entry);
     connectSessionWebSocket(sessionMeta.id);
