@@ -128,27 +128,73 @@ const MIME_BY_EXT = {
 };
 const recentImages = [];
 
+/**
+ * Compact and clean terminal scrollback buffer:
+ * - Removes intermediate/stale prompt boxes (e.g. "esc to cancel") that accumulated during streaming
+ * - Resolves cursor-up rewrites (\r\x1b[<N>A) so overwritten lines do not stack redundantly
+ * - Collapses consecutive/stacked horizontal divider lines (─, ━, ═, -) into a single clean border
+ */
+function compactTerminalBuffer(input) {
+  if (!input || typeof input !== 'string') return '';
+  // 1. Remove intermediate/stale prompt boxes with 'esc to cancel'
+  const stalePromptRe = /(?:\r?\n)?(?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{10,}(?:\x1b\[[0-9;?]*[a-zA-Z])*\r?\n(?:\x1b\[[0-9;?]*[a-zA-Z])*>[\s\S]*?(?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{10,}(?:\x1b\[[0-9;?]*[a-zA-Z])*\r?\n(?:\x1b\[[0-9;?]*[a-zA-Z])*esc to cancel[^\r\n]*(?:\r?\n)?/g;
+  let text = input.replace(stalePromptRe, '');
+
+  // 2. Process cursor-up rewrites (\r\x1b[(\d+)A) when text contains ANSI rewrites
+  if (text.length > 2000 && text.includes('\x1b[')) {
+    const regex = /\r\x1b\[(\d+)A(?:\x1b\[[0-9;?]*[a-zA-Z])*/g;
+    let lastIndex = 0;
+    let buffer = '';
+    let m;
+    let matched = false;
+
+    while ((m = regex.exec(text)) !== null) {
+      matched = true;
+      buffer += text.slice(lastIndex, m.index);
+      const upCount = parseInt(m[1], 10);
+      if (upCount > 0 && upCount <= 60) {
+        let lines = buffer.split('\n');
+        if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+        const removeLines = Math.min(upCount, lines.length);
+        lines = lines.slice(0, lines.length - removeLines);
+        buffer = lines.length > 0 ? lines.join('\n') + '\n' : '';
+      }
+      lastIndex = regex.lastIndex;
+    }
+    if (matched) {
+      buffer += text.slice(lastIndex);
+      text = buffer;
+    }
+  }
+
+  // 3. Collapse stacked / consecutive horizontal divider lines
+  const borderPattern = '(?:(?:\\x1b\\[[0-9;?]*[a-zA-Z])*[─━═-]{6,}(?:\\x1b\\[[0-9;?]*[a-zA-Z])*\\s*[\\r\\n]+)';
+  const stackedBordersRe = new RegExp('(' + borderPattern + ')(?:\\s*[\\r\\n]*' + borderPattern + ')+', 'g');
+  text = text.replace(stackedBordersRe, '$1');
+
+  // 4. Collapse excessive blank lines surrounding horizontal divider lines
+  text = text.replace(/(?:[\r\n]{3,})((?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{6,})/g, '\r\n\r\n$1');
+  text = text.replace(/((?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{6,})(?:[\r\n]{3,})/g, '$1\r\n\r\n');
+
+  return text;
+}
+
 function writeInlineImageToSession(session, { title, resolvedPath, url, b64, byteSize }) {
   if (!session || session.exited || !b64) return;
   const cols = session.cols || 140;
   const label = title || (resolvedPath ? path.basename(resolvedPath) : url || 'image');
   const oscImg = `\x1b]1337;File=inline=1;size=${byteSize || b64.length};height=14;preserveAspectRatio=1:${b64}\x07`;
 
-  // Check if session scrollback ends with agy's 4-line "> " prompt box
+  // Write image line cleanly without creating unnecessary redundant synthetic border boxes
   const tail = session.scrollback.slice(-1200);
   const isAgyPrompt = tail.includes('? for shortcuts') && tail.includes('\x1b[2A\x1b[2C');
 
   let seq;
   if (isAgyPrompt) {
-    const border = '─'.repeat(Math.max(40, cols));
     seq =
       `\r\x1b[1A\x1b[J` +
       `\x1b[38;2;133;153;0m●\x1b[m \x1b[38;2;181;137;0;1mImage\x1b[m \x1b[38;2;238;232;213m${label}\x1b[m\r\n` +
-      `  ${oscImg}\r\n\n` +
-      `\x1b[38;2;7;54;66m${border}\x1b[m\r\n` +
-      `\x1b[38;2;38;139;210m>\x1b[m\r\n` +
-      `\x1b[38;2;7;54;66m${border}\x1b[m\r\n` +
-      `\x1b[38;2;131;148;150m? for shortcuts\x1b[m\r\x1b[2A\x1b[2C\x1b[?25h`;
+      `  ${oscImg}\r\n`;
   } else {
     seq =
       `\r\x1b[K\x1b[38;2;133;153;0m●\x1b[m \x1b[38;2;181;137;0;1mImage\x1b[m \x1b[38;2;238;232;213m${label}\x1b[m\r\n` +
@@ -839,7 +885,11 @@ function createSession({
   };
 
   const compactAgyProgress = (raw) => {
-    return raw || '';
+    if (!raw || typeof raw !== 'string') return '';
+    // Collapse consecutive horizontal divider lines that arrive together
+    const borderPattern = '(?:(?:\\x1b\\[[0-9;?]*[a-zA-Z])*[─━═-]{6,}(?:\\x1b\\[[0-9;?]*[a-zA-Z])*\\s*[\\r\\n]+)';
+    const stackedBordersRe = new RegExp('(' + borderPattern + ')(?:\\s*[\\r\\n]*' + borderPattern + ')+', 'g');
+    return raw.replace(stackedBordersRe, '$1');
   };
 
   const appendScrollback = (data) => {
@@ -878,7 +928,27 @@ function createSession({
       session.scrollback = cleanedData.slice(clearIdx);
       return;
     }
+
+    // Cursor up line rewrites (\r\x1b[NA): pop overwritten lines from scrollback buffer
+    const cursorUpMatch = cleanedData.match(/^\r\x1b\[(\d+)A/);
+    if (cursorUpMatch) {
+      const upCount = parseInt(cursorUpMatch[1], 10);
+      if (upCount > 0 && upCount <= 60 && session.scrollback.length > 0) {
+        let lines = session.scrollback.split('\n');
+        if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+        const removeCount = Math.min(upCount, lines.length);
+        lines = lines.slice(0, lines.length - removeCount);
+        session.scrollback = lines.length > 0 ? lines.join('\n') + '\n' : '';
+      }
+    }
+
     session.scrollback += cleanedData;
+
+    // Periodically compact scrollback if it grows large to avoid unbounded redraw bloat
+    if (session.scrollback.length > 120 * 1024) {
+      session.scrollback = compactTerminalBuffer(session.scrollback);
+    }
+
     if (session.scrollback.length > MAX_SCROLLBACK_LENGTH) {
       session.scrollback = session.scrollback.slice(session.scrollback.length - MAX_SCROLLBACK_LENGTH);
     }
@@ -2137,11 +2207,14 @@ wss.on('connection', (ws, req) => {
   session.clients.add(ws);
 
   // Send metadata and scrollback buffer so browser refresh preserves full state
+  // Compact scrollback to eliminate stacked horizontal lines and obsolete intermediate frames
+  const compacted = compactTerminalBuffer(session.scrollback);
+  session.scrollback = compacted;
   ws.send(
     JSON.stringify({
       type: 'init',
       session: serializeSession(session),
-      scrollback: session.scrollback,
+      scrollback: compacted,
       inlineItems: session.inlineItems ? Array.from(session.inlineItems.values()) : [],
       agentActivity: session.agentActivity || { status: 'idle', currentTool: null, recentToolCalls: [] },
       hermesHistory: session.hermesHistory || [],

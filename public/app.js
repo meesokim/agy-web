@@ -446,7 +446,48 @@
     };
 
     function compactTerminalProgress(raw) {
-      return raw || '';
+      if (!raw || typeof raw !== 'string') return '';
+      // 1. Remove intermediate/stale prompt boxes with 'esc to cancel'
+      const stalePromptRe = /(?:\r?\n)?(?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{10,}(?:\x1b\[[0-9;?]*[a-zA-Z])*\r?\n(?:\x1b\[[0-9;?]*[a-zA-Z])*>[\s\S]*?(?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{10,}(?:\x1b\[[0-9;?]*[a-zA-Z])*\r?\n(?:\x1b\[[0-9;?]*[a-zA-Z])*esc to cancel[^\r\n]*(?:\r?\n)?/g;
+      let text = raw.replace(stalePromptRe, '');
+
+      // 2. Process cursor-up rewrites (\r\x1b[(\d+)A) when text contains ANSI rewrites
+      if (text.length > 2000 && text.includes('\x1b[')) {
+        const regex = /\r\x1b\[(\d+)A(?:\x1b\[[0-9;?]*[a-zA-Z])*/g;
+        let lastIndex = 0;
+        let buffer = '';
+        let m;
+        let matched = false;
+
+        while ((m = regex.exec(text)) !== null) {
+          matched = true;
+          buffer += text.slice(lastIndex, m.index);
+          const upCount = parseInt(m[1], 10);
+          if (upCount > 0 && upCount <= 60) {
+            let lines = buffer.split('\n');
+            if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+            const removeLines = Math.min(upCount, lines.length);
+            lines = lines.slice(0, lines.length - removeLines);
+            buffer = lines.length > 0 ? lines.join('\n') + '\n' : '';
+          }
+          lastIndex = regex.lastIndex;
+        }
+        if (matched) {
+          buffer += text.slice(lastIndex);
+          text = buffer;
+        }
+      }
+
+      // 3. Collapse stacked / consecutive horizontal divider lines
+      const borderPattern = '(?:(?:\\x1b\\[[0-9;?]*[a-zA-Z])*[─━═-]{6,}(?:\\x1b\\[[0-9;?]*[a-zA-Z])*\\s*[\\r\\n]+)';
+      const stackedBordersRe = new RegExp('(' + borderPattern + ')(?:\\s*[\\r\\n]*' + borderPattern + ')+', 'g');
+      text = text.replace(stackedBordersRe, '$1');
+
+      // 4. Collapse excessive blank lines surrounding horizontal divider lines
+      text = text.replace(/(?:[\r\n]{3,})((?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{6,})/g, '\r\n\r\n$1');
+      text = text.replace(/((?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{6,})(?:[\r\n]{3,})/g, '$1\r\n\r\n');
+
+      return text;
     }
 
     ws.onmessage = (event) => {
