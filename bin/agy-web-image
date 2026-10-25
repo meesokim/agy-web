@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+/**
+ * Display a local image file or image URL directly inside AGY Web Console.
+ * Usage:
+ *   agy-web-image /path/to/image.png ["제목/캡션"]
+ *   agy-web-image https://example.com/photo.jpg
+ */
+const fs = require('fs');
+const path = require('path');
+
+const target = process.argv[2];
+const title = process.argv.slice(3).join(' ');
+
+if (!target) {
+  console.error('사용법: agy-web-image <이미지_파일경로_또는_URL> [제목]');
+  process.exit(1);
+}
+
+const port = process.env.PORT || '3080';
+const baseUrl = `http://127.0.0.1:${port}`;
+
+(async () => {
+  const isUrl = /^https?:\/\//i.test(target);
+  const resolvedPath = isUrl ? '' : path.resolve(target);
+
+  if (!isUrl && !fs.existsSync(resolvedPath)) {
+    console.error(`❌ 파일을 찾을 수 없습니다: ${resolvedPath}`);
+    process.exit(1);
+  }
+
+  // 1. Try /api/show-image
+  try {
+    const res = await fetch(`${baseUrl}/api/show-image`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        isUrl
+          ? { url: target, title: title || path.basename(target) }
+          : { path: resolvedPath, title: title || path.basename(resolvedPath) }
+      ),
+    });
+    if (res.ok) {
+      if (process.env.AGY_WEB_CONSOLE !== '1') {
+        console.log(`🖼️ agy-web 이미지 표시 완료: ${isUrl ? target : resolvedPath}`);
+      }
+      process.exit(0);
+    }
+  } catch (_) {}
+
+  // 2. Fallback to /api/open-url
+  try {
+    const fileUri = isUrl ? target : `file://${resolvedPath}`;
+    await fetch(`${baseUrl}/api/open-url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: fileUri }),
+    });
+    console.log(`🖼️ agy-web 이미지 전달 완료: ${fileUri}`);
+  } catch (err) {
+    console.error(`❌ agy-web 전송 실패: ${err.message}`);
+    process.exit(1);
+  }
+})();

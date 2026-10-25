@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { WebSocket } = require('ws');
@@ -110,40 +111,82 @@ function deleteInternalBookmark(id) {
 }
 
 /**
- * Scan local Chromium browsers (Chrome, Edge, Whale, Brave) for their Bookmarks JSON files.
+ * Scan local Chromium browsers (Chrome, Chromium, Edge, Whale, Brave) for their Bookmarks JSON files.
  */
 function getBrowserDefinitions() {
-  const localAppData = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Local');
+  if (process.platform === 'win32') {
+    const localAppData =
+      process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Local');
+    return [
+      {
+        id: 'chrome',
+        name: 'Google Chrome',
+        userDataDir: path.join(localAppData, 'Google', 'Chrome', 'User Data'),
+        exePaths: [
+          'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+          'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        ],
+      },
+      {
+        id: 'edge',
+        name: 'Microsoft Edge',
+        userDataDir: path.join(localAppData, 'Microsoft', 'Edge', 'User Data'),
+        exePaths: [
+          'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+          'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+        ],
+      },
+      {
+        id: 'whale',
+        name: 'Naver Whale',
+        userDataDir: path.join(localAppData, 'Naver', 'Naver Whale', 'User Data'),
+        exePaths: ['C:\\Program Files\\Naver\\Naver Whale\\Application\\whale.exe'],
+      },
+      {
+        id: 'brave',
+        name: 'Brave',
+        userDataDir: path.join(localAppData, 'BraveSoftware', 'Brave-Browser', 'User Data'),
+        exePaths: ['C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe'],
+      },
+    ];
+  }
+
+  const home = os.homedir();
+  const configDir = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
   return [
     {
       id: 'chrome',
       name: 'Google Chrome',
-      userDataDir: path.join(localAppData, 'Google', 'Chrome', 'User Data'),
+      userDataDir: path.join(configDir, 'google-chrome'),
       exePaths: [
-        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/opt/google/chrome/google-chrome',
       ],
+    },
+    {
+      id: 'chromium',
+      name: 'Chromium',
+      userDataDir: path.join(configDir, 'chromium'),
+      exePaths: ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium'],
     },
     {
       id: 'edge',
       name: 'Microsoft Edge',
-      userDataDir: path.join(localAppData, 'Microsoft', 'Edge', 'User Data'),
-      exePaths: [
-        'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-      ],
+      userDataDir: path.join(configDir, 'microsoft-edge'),
+      exePaths: ['/usr/bin/microsoft-edge', '/usr/bin/microsoft-edge-stable'],
     },
     {
       id: 'whale',
       name: 'Naver Whale',
-      userDataDir: path.join(localAppData, 'Naver', 'Naver Whale', 'User Data'),
-      exePaths: ['C:\\Program Files\\Naver\\Naver Whale\\Application\\whale.exe'],
+      userDataDir: path.join(configDir, 'naver-whale'),
+      exePaths: ['/usr/bin/naver-whale', '/usr/bin/naver-whale-stable', '/opt/naver/whale/naver-whale'],
     },
     {
       id: 'brave',
       name: 'Brave',
-      userDataDir: path.join(localAppData, 'BraveSoftware', 'Brave-Browser', 'User Data'),
-      exePaths: ['C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe'],
+      userDataDir: path.join(configDir, 'BraveSoftware', 'Brave-Browser'),
+      exePaths: ['/usr/bin/brave-browser', '/usr/bin/brave', '/snap/bin/brave'],
     },
   ];
 }
@@ -271,9 +314,33 @@ function extractUrlsFromChromiumSessions() {
 }
 
 /**
- * Query Chrome/Edge Remote Debugging Port (CDP) if available (default 9222).
+ * Discover active CDP ports from [9222, 9223] plus any DevToolsActivePort files in browser profiles.
  */
-async function queryCdpTabs(ports = [9222, 9223]) {
+function getCandidateCdpPorts() {
+  const portSet = new Set([9222, 9223]);
+  const dirs = [
+    ...getBrowserDefinitions().map((b) => b.userDataDir),
+    path.join(__dirname, '.cdp-profile'),
+  ];
+  for (const dir of dirs) {
+    try {
+      const portFile = path.join(dir, 'DevToolsActivePort');
+      if (fs.existsSync(portFile)) {
+        const lines = fs.readFileSync(portFile, 'utf8').trim().split(/\r?\n/);
+        const p = parseInt(lines[0], 10);
+        if (p > 0 && p < 65536) {
+          portSet.add(p);
+        }
+      }
+    } catch (_) {}
+  }
+  return Array.from(portSet);
+}
+
+/**
+ * Query Chrome/Edge Remote Debugging Port (CDP) if available (default 9222 + DevToolsActivePort).
+ */
+async function queryCdpTabs(ports = getCandidateCdpPorts()) {
   const cdpTabs = [];
   for (const port of ports) {
     try {
@@ -307,43 +374,82 @@ async function queryCdpTabs(ports = [9222, 9223]) {
 }
 
 /**
- * Query open browser windows and UI Automation tab items on Windows.
+ * Query open browser windows on Windows or Linux.
  */
 function queryWindowsBrowserWindows() {
   return new Promise((resolve) => {
-    if (process.platform !== 'win32') {
-      return resolve([]);
+    if (process.platform === 'win32') {
+      const psScript = `
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $procs = Get-Process chrome,msedge,whale,brave,firefox -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -and $_.MainWindowHandle -ne 0 }
+        $out = @()
+        foreach ($p in $procs) {
+          $out += [PSCustomObject]@{
+            processName = $p.ProcessName
+            pid = $p.Id
+            windowTitle = $p.MainWindowTitle
+          }
+        }
+        $out | ConvertTo-Json -Compress
+      `;
+      execFile(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', psScript],
+        { timeout: 2500, windowsHide: true },
+        (err, stdout) => {
+          if (err || !stdout || !stdout.trim()) {
+            return resolve([]);
+          }
+          try {
+            const parsed = JSON.parse(stdout.trim());
+            const arr = Array.isArray(parsed) ? parsed : [parsed];
+            resolve(arr);
+          } catch (_) {
+            resolve([]);
+          }
+        }
+      );
+      return;
     }
-    const psScript = `
-      [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-      $procs = Get-Process chrome,msedge,whale,brave,firefox -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -and $_.MainWindowHandle -ne 0 }
-      $out = @()
-      foreach ($p in $procs) {
-        $out += [PSCustomObject]@{
-          processName = $p.ProcessName
-          pid = $p.Id
-          windowTitle = $p.MainWindowTitle
+
+    // Linux: try wmctrl -lp first, fallback to ps for running browser main processes
+    execFile('wmctrl', ['-lp'], { timeout: 1500 }, (err, stdout) => {
+      if (!err && stdout && stdout.trim()) {
+        const out = [];
+        for (const line of stdout.trim().split('\n')) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 5) {
+            const pid = Number(parts[2]) || 0;
+            const title = parts.slice(4).join(' ');
+            if (/(Chrome|Chromium|Edge|Whale|Brave|Firefox)/i.test(title)) {
+              out.push({ processName: 'browser', pid, windowTitle: title });
+            }
+          }
         }
+        if (out.length > 0) return resolve(out);
       }
-      $out | ConvertTo-Json -Compress
-    `;
-    execFile(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', psScript],
-      { timeout: 2500, windowsHide: true },
-      (err, stdout) => {
-        if (err || !stdout || !stdout.trim()) {
-          return resolve([]);
+
+      execFile('ps', ['-eo', 'pid=,comm=,args='], { timeout: 1500 }, (psErr, psOut) => {
+        if (psErr || !psOut) return resolve([]);
+        const out = [];
+        for (const line of psOut.split('\n')) {
+          const m = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
+          if (!m) continue;
+          const [, pid, comm, args] = m;
+          if (
+            /^(chrome|google-chrome|chromium|msedge|whale|brave|firefox)$/i.test(comm) &&
+            !args.includes('--type=')
+          ) {
+            out.push({
+              processName: comm,
+              pid: Number(pid),
+              windowTitle: `${comm} (PID ${pid})`,
+            });
+          }
         }
-        try {
-          const parsed = JSON.parse(stdout.trim());
-          const arr = Array.isArray(parsed) ? parsed : [parsed];
-          resolve(arr);
-        } catch (_) {
-          resolve([]);
-        }
-      }
-    );
+        resolve(out);
+      });
+    });
   });
 }
 
@@ -546,7 +652,7 @@ const NAVER_MAIL_EXTRACTOR_EXPR = `
 `;
 
 async function fetchNaverMailFromBrowser({ readUrl = null } = {}) {
-  const cdpTabs = await queryCdpTabs([9222, 9223]);
+  const cdpTabs = await queryCdpTabs();
   const naverTab = cdpTabs.find(
     (t) => t.url && t.url.includes('mail.naver.com') && t.webSocketDebuggerUrl
   );
@@ -571,7 +677,7 @@ async function fetchNaverMailFromBrowser({ readUrl = null } = {}) {
 
 async function inspectOpenBrowserTabs() {
   const [cdpTabs, winWindows] = await Promise.all([
-    queryCdpTabs([9222, 9223]),
+    queryCdpTabs(),
     queryWindowsBrowserWindows(),
   ]);
   const sessionUrls = extractUrlsFromChromiumSessions();
@@ -613,6 +719,8 @@ function launchCdpBrowser(preferred = 'chrome') {
     exe,
     [
       '--remote-debugging-port=9222',
+      '--no-first-run',
+      '--no-default-browser-check',
       `--user-data-dir=${debugProfileDir}`,
       `--load-extension=${extDir}`,
       'https://mail.naver.com',
@@ -621,6 +729,21 @@ function launchCdpBrowser(preferred = 'chrome') {
     { windowsHide: false },
     () => {}
   );
+
+  // Sync DevToolsActivePort to default Chrome config dir if missing so /browser MCP can also autoConnect
+  setTimeout(() => {
+    try {
+      const cdpPortFile = path.join(debugProfileDir, 'DevToolsActivePort');
+      const chromeDir = defs[0] && defs[0].userDataDir;
+      if (fs.existsSync(cdpPortFile) && chromeDir && fs.existsSync(chromeDir)) {
+        const destFile = path.join(chromeDir, 'DevToolsActivePort');
+        if (!fs.existsSync(destFile)) {
+          fs.copyFileSync(cdpPortFile, destFile);
+        }
+      }
+    } catch (_) {}
+  }, 1500);
+
   return { exe, port: 9222 };
 }
 
@@ -631,7 +754,7 @@ async function focusExistingCdpTab(rawUrl) {
   try {
     const target = new URL(rawUrl);
     const targetKey = (target.origin + target.pathname.replace(/\/+$/, '')).toLowerCase();
-    const cdpTabs = await queryCdpTabs([9222, 9223]);
+    const cdpTabs = await queryCdpTabs();
     for (const tab of cdpTabs) {
       try {
         const u = new URL(tab.url);
@@ -644,6 +767,676 @@ async function focusExistingCdpTab(rawUrl) {
     }
   } catch (_) {}
   return false;
+}
+
+// ============================================================================
+// Joined Naver Cafe Management & Article Search
+// ============================================================================
+const JOINED_CAFES_FILE = path.join(__dirname, 'joined-cafes.json');
+
+let cachedNaverCafeState = {
+  source: null,
+  pageUrl: 'https://section.cafe.naver.com',
+  pageTitle: '네이버 카페',
+  fetchedAt: null,
+  joinedCafes: [],
+  articles: [],
+  openArticle: null,
+  lastQuery: '',
+};
+
+let pendingCafeTask = null;
+const pendingCafeResolvers = new Map();
+
+function stripHtmlTags(str) {
+  return String(str || '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeCafeEntry(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  let cafeUrl = String(raw.cafeUrl || raw.cluburl || '').trim();
+  let cafeId = String(raw.cafeId || raw.clubid || '').trim();
+  let rawUrl = String(raw.url || '').trim();
+
+  if (!cafeUrl && rawUrl) {
+    const m = rawUrl.match(/cafe\.naver\.com\/([A-Za-z0-9_-]{2,40})/);
+    if (
+      m &&
+      ![
+        'ca-fe',
+        'ArticleRead.nhn',
+        'ArticleList.nhn',
+        'ArticleSearchList.nhn',
+        'MyCafeIntro.nhn',
+        'f-e',
+      ].includes(m[1])
+    ) {
+      cafeUrl = m[1];
+    }
+    const idMatch = rawUrl.match(/[?&](?:clubid|search\.clubid)=(\d+)/i);
+    if (idMatch && !cafeId) {
+      cafeId = idMatch[1];
+    }
+  }
+  cafeUrl = cafeUrl.replace(/^https?:\/\/cafe\.naver\.com\//i, '').replace(/^\/+|\/+$/g, '');
+  if (!cafeUrl && !cafeId) return null;
+
+  const cafeName = stripHtmlTags(raw.cafeName || raw.title || cafeUrl || `카페 ${cafeId}`);
+  const url = cafeUrl
+    ? `https://cafe.naver.com/${cafeUrl}`
+    : `https://cafe.naver.com/MyCafeIntro.nhn?clubid=${cafeId}`;
+
+  return {
+    cafeId,
+    cafeUrl,
+    cafeName: cafeName || cafeUrl || cafeId,
+    memberLevelName: raw.memberLevelName || '',
+    url,
+  };
+}
+
+function loadSavedJoinedCafes() {
+  const map = new Map();
+  try {
+    if (fs.existsSync(JOINED_CAFES_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(JOINED_CAFES_FILE, 'utf8'));
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          const norm = normalizeCafeEntry(item);
+          if (norm) {
+            const key = (norm.cafeUrl || norm.cafeId).toLowerCase();
+            map.set(key, norm);
+          }
+        }
+      }
+    }
+  } catch (_) {}
+
+  // Also discover any Naver Cafes from local browser bookmarks & recent session URLs
+  try {
+    const bmGroups = readLocalBrowserBookmarks();
+    for (const g of bmGroups) {
+      for (const it of g.items || []) {
+        if (it.url && it.url.includes('cafe.naver.com/')) {
+          const norm = normalizeCafeEntry({
+            url: it.url,
+            cafeName: it.title ? it.title.replace(/\s*:\s*네이버 카페.*$/, '') : '',
+          });
+          if (norm) {
+            const key = (norm.cafeUrl || norm.cafeId).toLowerCase();
+            if (!map.has(key)) map.set(key, norm);
+          }
+        }
+      }
+    }
+    const sessUrls = extractUrlsFromChromiumSessions();
+    for (const s of sessUrls) {
+      if (s.url && s.url.includes('cafe.naver.com/')) {
+        const norm = normalizeCafeEntry({ url: s.url });
+        if (norm) {
+          const key = (norm.cafeUrl || norm.cafeId).toLowerCase();
+          if (!map.has(key)) map.set(key, norm);
+        }
+      }
+    }
+  } catch (_) {}
+
+  return Array.from(map.values());
+}
+
+function saveJoinedCafes(list) {
+  try {
+    const map = new Map();
+    for (const raw of list) {
+      const norm = normalizeCafeEntry(raw);
+      if (!norm) continue;
+      const key = (norm.cafeUrl || norm.cafeId).toLowerCase();
+      const prev = map.get(key);
+      map.set(key, {
+        ...prev,
+        ...norm,
+        cafeId: norm.cafeId || prev?.cafeId || '',
+        cafeUrl: norm.cafeUrl || prev?.cafeUrl || '',
+        cafeName:
+          norm.cafeName && norm.cafeName !== norm.cafeUrl
+            ? norm.cafeName
+            : prev?.cafeName || norm.cafeName,
+      });
+    }
+    const merged = Array.from(map.values());
+    fs.writeFileSync(JOINED_CAFES_FILE, JSON.stringify(merged, null, 2), 'utf8');
+    cachedNaverCafeState.joinedCafes = merged;
+    return merged;
+  } catch (_) {
+    return list;
+  }
+}
+
+function addJoinedCafe({ cafeUrl, cafeName, cafeId }) {
+  const existing = loadSavedJoinedCafes();
+  const norm = normalizeCafeEntry({
+    cafeUrl,
+    cafeName,
+    cafeId,
+    url: cafeUrl,
+  });
+  if (!norm) return null;
+  const merged = saveJoinedCafes([norm, ...existing]);
+  return merged.find(
+    (c) =>
+      (norm.cafeUrl && c.cafeUrl.toLowerCase() === norm.cafeUrl.toLowerCase()) ||
+      (norm.cafeId && c.cafeId === norm.cafeId)
+  );
+}
+
+function deleteJoinedCafe(targetKey) {
+  if (!targetKey) return false;
+  const keyLower = String(targetKey).toLowerCase();
+  const existing = loadSavedJoinedCafes();
+  const filtered = existing.filter(
+    (c) =>
+      c.cafeUrl.toLowerCase() !== keyLower &&
+      c.cafeId.toLowerCase() !== keyLower
+  );
+  fs.writeFileSync(JOINED_CAFES_FILE, JSON.stringify(filtered, null, 2), 'utf8');
+  cachedNaverCafeState.joinedCafes = filtered;
+  return filtered.length !== existing.length;
+}
+
+function updateNaverCafeState(payload, source = 'sync') {
+  if (!payload || typeof payload !== 'object') return cachedNaverCafeState;
+  const currentCafes = loadSavedJoinedCafes();
+  const incomingCafes = Array.isArray(payload.joinedCafes) ? payload.joinedCafes : [];
+  const mergedCafes =
+    incomingCafes.length > 0 ? saveJoinedCafes([...incomingCafes, ...currentCafes]) : currentCafes;
+
+  cachedNaverCafeState = {
+    source,
+    pageUrl: payload.pageUrl || cachedNaverCafeState.pageUrl,
+    pageTitle: payload.pageTitle || cachedNaverCafeState.pageTitle,
+    fetchedAt: payload.fetchedAt || new Date().toISOString(),
+    joinedCafes: mergedCafes,
+    articles: Array.isArray(payload.articles)
+      ? payload.articles
+      : cachedNaverCafeState.articles,
+    openArticle: payload.openArticle || cachedNaverCafeState.openArticle,
+    lastQuery:
+      typeof payload.query === 'string' ? payload.query : cachedNaverCafeState.lastQuery,
+  };
+  return cachedNaverCafeState;
+}
+
+function getPendingCafeTask() {
+  const task = pendingCafeTask;
+  pendingCafeTask = null;
+  return task;
+}
+
+function resolveCafeTaskResult(payload) {
+  if (!payload || typeof payload !== 'object') return;
+  if (Array.isArray(payload.joinedCafes) && payload.joinedCafes.length > 0) {
+    saveJoinedCafes([...payload.joinedCafes, ...loadSavedJoinedCafes()]);
+  }
+  if (Array.isArray(payload.articles)) {
+    cachedNaverCafeState.articles = payload.articles;
+    cachedNaverCafeState.fetchedAt = new Date().toISOString();
+    cachedNaverCafeState.source = 'extension-live';
+    if (payload.query) cachedNaverCafeState.lastQuery = payload.query;
+  }
+  const resolver = payload.taskId && pendingCafeResolvers.get(payload.taskId);
+  if (resolver) {
+    pendingCafeResolvers.delete(payload.taskId);
+    resolver(payload);
+  }
+}
+
+function dispatchExtensionCafeTask(taskPayload, timeoutMs = 2800) {
+  return new Promise((resolve) => {
+    const id = `cafe-task-${Date.now().toString(36)}-${crypto.randomBytes(2).toString('hex')}`;
+    pendingCafeTask = { id, ...taskPayload };
+    const timer = setTimeout(() => {
+      pendingCafeResolvers.delete(id);
+      if (pendingCafeTask && pendingCafeTask.id === id) {
+        pendingCafeTask = null;
+      }
+      resolve(null);
+    }, timeoutMs);
+    pendingCafeResolvers.set(id, (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+  });
+}
+
+/**
+ * Resolve numeric cafeId from cafeUrl slug using Naver Cafe public gate API.
+ */
+async function resolveCafeInfoBySlug(cafeUrl) {
+  if (!cafeUrl) return null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const resp = await fetch(
+      `https://apis.naver.com/cafe-web/cafe2/CafeGateInfo.json?cluburl=${encodeURIComponent(cafeUrl)}`,
+      {
+        signal: controller.signal,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          Referer: `https://cafe.naver.com/${cafeUrl}`,
+        },
+      }
+    );
+    clearTimeout(timer);
+    if (resp.ok) {
+      const json = await resp.json();
+      const view = json?.message?.result?.cafeInfoView;
+      if (view && view.cafeId) {
+        return {
+          cafeId: String(view.cafeId),
+          cafeUrl: view.cafeUrl || cafeUrl,
+          cafeName: stripHtmlTags(view.cafeName || cafeUrl),
+        };
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+/**
+ * Server-side search for articles inside a specific cafe (or across joined cafes) via Naver Cafe APIs + Naver Search fallback.
+ */
+async function searchCafeArticlesFromServer(cafe, query, perPage = 15) {
+  const results = [];
+  const seen = new Set();
+
+  let cafeId = cafe?.cafeId || '';
+  let cafeUrl = cafe?.cafeUrl || '';
+  let cafeName = cafe?.cafeName || cafeUrl || cafeId || '네이버 카페';
+
+  if (!cafeId && cafeUrl) {
+    const resolved = await resolveCafeInfoBySlug(cafeUrl);
+    if (resolved) {
+      cafeId = resolved.cafeId;
+      cafeName = resolved.cafeName || cafeName;
+    }
+  }
+
+  // 1. Try Naver Cafe Search APIs if cafeId is known
+  if (cafeId) {
+    const apiEndpoints = [
+      `https://apis.naver.com/cafe-web/cafe-search-api/v1.0/cafes/${cafeId}/search/articles?query=${encodeURIComponent(query)}&page=1&perPage=${perPage}&sortBy=TIME`,
+      `https://apis.naver.com/cafe-web/cafe-mobile/CafeMobileWebArticleSearchListV3?cafeId=${cafeId}&query=${encodeURIComponent(query)}&searchBy=0&sortBy=date&page=1&perPage=${perPage}`,
+    ];
+    for (const ep of apiEndpoints) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 3500);
+        const resp = await fetch(ep, {
+          signal: controller.signal,
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            Referer: cafeUrl ? `https://cafe.naver.com/${cafeUrl}` : 'https://section.cafe.naver.com/',
+          },
+        });
+        clearTimeout(timer);
+        if (!resp.ok) continue;
+        const json = await resp.json();
+        const list =
+          json?.result?.articleList ||
+          json?.message?.result?.articleList ||
+          json?.articleList ||
+          [];
+        if (Array.isArray(list) && list.length > 0) {
+          for (const item of list) {
+            const entry = item.item || item;
+            const articleId = String(entry.articleId || entry.id || '');
+            if (!articleId) continue;
+            const title = stripHtmlTags(entry.subject || entry.title || '(제목 없음)');
+            const snippet = stripHtmlTags(
+              entry.contentSummary || entry.summary || entry.content || ''
+            );
+            const author = stripHtmlTags(
+              entry.writerNickname || entry.writerInfo?.nickName || entry.memberNickName || ''
+            );
+            const date = entry.writeDateTimestamp
+              ? new Date(entry.writeDateTimestamp).toLocaleString('ko-KR')
+              : entry.addDate || entry.writeDate || '';
+            const url = cafeUrl
+              ? `https://cafe.naver.com/${cafeUrl}/${articleId}`
+              : `https://cafe.naver.com/ArticleRead.nhn?clubid=${cafeId}&articleid=${articleId}`;
+            if (!seen.has(url)) {
+              seen.add(url);
+              results.push({
+                articleId,
+                cafeId,
+                cafeUrl,
+                cafeName,
+                title,
+                snippet,
+                author,
+                date,
+                url,
+              });
+            }
+          }
+          if (results.length > 0) return results;
+        }
+      } catch (_) {}
+    }
+  }
+
+  // 2. Fallback: Query Naver Cafe Search (search.naver.com?ssc=tab.cafe.all) scoped to the cafe or joined cafes
+  try {
+    const prefix =
+      cafeName && cafeName !== '네이버 카페' && cafeName !== cafeUrl
+        ? cafeName
+        : cafeUrl || '';
+    const effectiveQuery = prefix ? `${prefix} ${query}` : query;
+    const searchUrl = `https://search.naver.com/search.naver?ssc=tab.cafe.all&ie=utf8&query=${encodeURIComponent(effectiveQuery)}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4500);
+    const resp = await fetch(searchUrl, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      },
+    });
+    clearTimeout(timer);
+    if (resp.ok) {
+      const html = await resp.text();
+      const blocks = html.split('<li class="bx _bx">').slice(1);
+      const matchedItems = [];
+      const fallbackItems = [];
+
+      for (const b of blocks) {
+        const cafeM = b.match(
+          /<a href="https:\/\/cafe\.naver\.com\/([A-Za-z0-9_-]+)" class="name"[^>]*>([\s\S]*?)<\/a>/i
+        );
+        const dateM = b.match(/<span class="sub">([\s\S]*?)<\/span>/i);
+        const titleM = b.match(
+          /<a href="(https:\/\/cafe\.naver\.com\/([A-Za-z0-9_-]+)\/(\d+)[^"]*)"[^>]*class="title_link"[^>]*>([\s\S]*?)<\/a>/i
+        );
+        const dscM = b.match(/class="dsc_link"[^>]*>([\s\S]*?)<\/a>/i);
+        if (!titleM) continue;
+
+        const slug = titleM[2] || cafeM?.[1] || '';
+        const artId = titleM[3] || '';
+        const cleanUrl = `https://cafe.naver.com/${slug}/${artId}`;
+        if (seen.has(cleanUrl)) continue;
+
+        const title = stripHtmlTags(titleM[4]);
+        if (!title) continue;
+
+        const itemObj = {
+          articleId: artId,
+          cafeId: cafeId || '',
+          cafeUrl: slug,
+          cafeName: stripHtmlTags(cafeM?.[2]) || cafeName || slug,
+          title,
+          snippet: stripHtmlTags(dscM?.[1] || '').slice(0, 220),
+          author: '',
+          date: stripHtmlTags(dateM?.[1] || ''),
+          url: cleanUrl,
+        };
+
+        if (cafeUrl && slug.toLowerCase() === cafeUrl.toLowerCase()) {
+          seen.add(cleanUrl);
+          matchedItems.push(itemObj);
+        } else if (!cafeUrl) {
+          seen.add(cleanUrl);
+          matchedItems.push(itemObj);
+        } else {
+          fallbackItems.push(itemObj);
+        }
+      }
+
+      const finalItems = matchedItems.length > 0 ? matchedItems : fallbackItems;
+      for (const it of finalItems.slice(0, perPage)) {
+        results.push(it);
+      }
+    }
+  } catch (_) {}
+
+  return results;
+}
+
+/**
+ * Fetch joined cafes & current state via CDP, Extension, or saved state.
+ */
+async function fetchNaverCafeFromBrowser() {
+  const savedCafes = loadSavedJoinedCafes();
+  cachedNaverCafeState.joinedCafes = savedCafes;
+
+  // 1. Check if a CDP tab on *.naver.com is open
+  const cdpTabs = await queryCdpTabs();
+  const naverTab = cdpTabs.find(
+    (t) =>
+      t.url &&
+      (t.url.includes('cafe.naver.com') || t.url.includes('naver.com')) &&
+      t.webSocketDebuggerUrl
+  );
+
+  if (naverTab) {
+    try {
+      const expr = `
+        (async () => {
+          const cafes = [];
+          const seen = new Set();
+          try {
+            const r = await fetch('https://apis.naver.com/cafe-home-web/cafe-home/v1/cafes/join?page=1&perPage=100', { credentials: 'include' });
+            if (r.ok) {
+              const j = await r.json();
+              const list = j?.message?.result?.cafes || j?.result?.cafes || [];
+              for (const c of list) {
+                const key = String(c.cafeId || c.cafeUrl || '');
+                if (key && !seen.has(key)) {
+                  seen.add(key);
+                  cafes.push({
+                    cafeId: String(c.cafeId || ''),
+                    cafeUrl: String(c.cafeUrl || ''),
+                    cafeName: c.cafeName || c.cafeUrl,
+                    memberLevelName: c.memberLevelName || '',
+                    url: c.cafeUrl ? ('https://cafe.naver.com/' + c.cafeUrl) : ''
+                  });
+                }
+              }
+            }
+          } catch (_) {}
+          return { joinedCafes: cafes, pageUrl: location.href, pageTitle: document.title };
+        })()
+      `;
+      const evaluated = await evaluateInCdpTab(naverTab.webSocketDebuggerUrl, expr);
+      if (evaluated && Array.isArray(evaluated.joinedCafes) && evaluated.joinedCafes.length > 0) {
+        return updateNaverCafeState(evaluated, 'cdp-live');
+      }
+    } catch (_) {}
+  }
+
+  // 2. If extension tabs are active, ask extension to sync joined cafes
+  if (extensionSyncedTabs.length > 0) {
+    const extRes = await dispatchExtensionCafeTask({ type: 'sync-cafes' }, 2000);
+    if (extRes && Array.isArray(extRes.joinedCafes) && extRes.joinedCafes.length > 0) {
+      return updateNaverCafeState(extRes, 'extension-live');
+    }
+  }
+
+  return cachedNaverCafeState;
+}
+
+/**
+ * Search articles across the user's joined Naver Cafes (or a specific joined cafe).
+ */
+async function searchJoinedNaverCafes({ query, cafeId = '', cafeUrl = '' } = {}) {
+  const trimmedQuery = String(query || '').trim();
+  if (!trimmedQuery) {
+    return cachedNaverCafeState;
+  }
+
+  // Ensure cafeUrl is normalized if user passed full URL
+  let cleanCafeUrl = String(cafeUrl || '')
+    .trim()
+    .replace(/^https?:\/\/cafe\.naver\.com\//i, '')
+    .replace(/^\/+|\/+$/g, '');
+
+  const joinedCafes = loadSavedJoinedCafes();
+
+  // 1. Try CDP evaluation with cookies if a *.naver.com CDP tab is open
+  const cdpTabs = await queryCdpTabs();
+  const naverTab = cdpTabs.find(
+    (t) =>
+      t.url &&
+      (t.url.includes('cafe.naver.com') || t.url.includes('naver.com')) &&
+      t.webSocketDebuggerUrl
+  );
+
+  if (naverTab) {
+    try {
+      const cdpSearchExpr = `
+        (async () => {
+          const query = ${JSON.stringify(trimmedQuery)};
+          const filterCafeId = ${JSON.stringify(String(cafeId || ''))};
+          const filterCafeUrl = ${JSON.stringify(cleanCafeUrl)};
+          let cafes = ${JSON.stringify(joinedCafes)};
+
+          try {
+            const r = await fetch('https://apis.naver.com/cafe-home-web/cafe-home/v1/cafes/join?page=1&perPage=100', { credentials: 'include' });
+            if (r.ok) {
+              const j = await r.json();
+              const list = j?.message?.result?.cafes || j?.result?.cafes || [];
+              if (list.length > 0) {
+                cafes = list.map(c => ({
+                  cafeId: String(c.cafeId || ''),
+                  cafeUrl: String(c.cafeUrl || ''),
+                  cafeName: c.cafeName || c.cafeUrl,
+                  url: c.cafeUrl ? ('https://cafe.naver.com/' + c.cafeUrl) : ''
+                }));
+              }
+            }
+          } catch (_) {}
+
+          let targets = cafes;
+          if (filterCafeId || filterCafeUrl) {
+            targets = cafes.filter(c => (filterCafeId && c.cafeId === filterCafeId) || (filterCafeUrl && c.cafeUrl.toLowerCase() === filterCafeUrl.toLowerCase()));
+            if (targets.length === 0) {
+              targets = [{ cafeId: filterCafeId, cafeUrl: filterCafeUrl, cafeName: filterCafeUrl || filterCafeId }];
+            }
+          } else {
+            targets = cafes.slice(0, 15);
+          }
+
+          const articles = [];
+          for (const c of targets) {
+            let cid = c.cafeId;
+            if (!cid && c.cafeUrl) {
+              try {
+                const gr = await fetch('https://apis.naver.com/cafe-web/cafe2/CafeGateInfo.json?cluburl=' + encodeURIComponent(c.cafeUrl), { credentials: 'include' });
+                if (gr.ok) {
+                  const gj = await gr.json();
+                  cid = String(gj?.message?.result?.cafeInfoView?.cafeId || '');
+                }
+              } catch (_) {}
+            }
+            if (!cid) continue;
+            try {
+              const sr = await fetch('https://apis.naver.com/cafe-web/cafe-search-api/v1.0/cafes/' + cid + '/search/articles?query=' + encodeURIComponent(query) + '&page=1&perPage=12&sortBy=TIME', { credentials: 'include' });
+              if (sr.ok) {
+                const sj = await sr.json();
+                const list = sj?.result?.articleList || sj?.message?.result?.articleList || [];
+                for (const item of list) {
+                  const e = item.item || item;
+                  const aid = String(e.articleId || e.id || '');
+                  if (!aid) continue;
+                  articles.push({
+                    articleId: aid,
+                    cafeId: cid,
+                    cafeUrl: c.cafeUrl || '',
+                    cafeName: c.cafeName || c.cafeUrl || cid,
+                    title: String(e.subject || e.title || '').replace(/<[^>]*>/g, ''),
+                    snippet: String(e.contentSummary || e.summary || '').replace(/<[^>]*>/g, ''),
+                    author: e.writerNickname || e.writerInfo?.nickName || '',
+                    date: e.writeDateTimestamp ? new Date(e.writeDateTimestamp).toLocaleString('ko-KR') : (e.addDate || ''),
+                    url: c.cafeUrl ? ('https://cafe.naver.com/' + c.cafeUrl + '/' + aid) : ('https://cafe.naver.com/ArticleRead.nhn?clubid=' + cid + '&articleid=' + aid)
+                  });
+                }
+              }
+            } catch (_) {}
+          }
+          return { joinedCafes: cafes, articles, query };
+        })()
+      `;
+      const evaluated = await evaluateInCdpTab(naverTab.webSocketDebuggerUrl, cdpSearchExpr);
+      if (evaluated && Array.isArray(evaluated.articles) && evaluated.articles.length > 0) {
+        return updateNaverCafeState(evaluated, 'cdp-live');
+      }
+    } catch (_) {}
+  }
+
+  // 2. Try Chrome Extension background worker task (uses browser's logged-in cookies)
+  if (extensionSyncedTabs.length > 0) {
+    const extRes = await dispatchExtensionCafeTask(
+      {
+        type: 'search-articles',
+        query: trimmedQuery,
+        cafeId,
+        cafeUrl: cleanCafeUrl,
+        targetCafes: joinedCafes,
+      },
+      3200
+    );
+    if (extRes && Array.isArray(extRes.articles) && extRes.articles.length > 0) {
+      return updateNaverCafeState(extRes, 'extension-live');
+    }
+  }
+
+  // 3. Server-side search across the user's joined cafes (or specified cafe)
+  let cafesToSearch = joinedCafes;
+  if (cafeId || cleanCafeUrl) {
+    cafesToSearch = joinedCafes.filter(
+      (c) =>
+        (cafeId && c.cafeId === String(cafeId)) ||
+        (cleanCafeUrl && c.cafeUrl.toLowerCase() === cleanCafeUrl.toLowerCase())
+    );
+    if (cafesToSearch.length === 0) {
+      cafesToSearch = [
+        {
+          cafeId: String(cafeId || ''),
+          cafeUrl: cleanCafeUrl,
+          cafeName: cleanCafeUrl || String(cafeId),
+        },
+      ];
+    }
+  }
+
+  let articles = [];
+  if (cafesToSearch.length > 0) {
+    const batches = await Promise.all(
+      cafesToSearch.slice(0, 12).map((c) => searchCafeArticlesFromServer(c, trimmedQuery, 12))
+    );
+    articles = batches.flat();
+  } else {
+    articles = await searchCafeArticlesFromServer({}, trimmedQuery, 20);
+  }
+
+  return updateNaverCafeState(
+    {
+      joinedCafes,
+      articles,
+      query: trimmedQuery,
+      fetchedAt: new Date().toISOString(),
+    },
+    'server-search'
+  );
 }
 
 module.exports = {
@@ -659,4 +1452,12 @@ module.exports = {
   updateExtensionTabs,
   updateNaverMailState,
   fetchNaverMailFromBrowser,
+  loadSavedJoinedCafes,
+  addJoinedCafe,
+  deleteJoinedCafe,
+  updateNaverCafeState,
+  fetchNaverCafeFromBrowser,
+  searchJoinedNaverCafes,
+  getPendingCafeTask,
+  resolveCafeTaskResult,
 };

@@ -1,11 +1,50 @@
 (() => {
   const SERVER_URL = 'http://127.0.0.1:3080/api/naver-mail/sync';
 
-  function extractNaverMailFromDom() {
+  async function extractNaverMail() {
     const mails = [];
     const seen = new Set();
 
-    // 1. Extract mail list items (supports Naver Mail v2 & classic DOM structures)
+    // 1. Try Naver Mail internal JSON API using logged-in session cookies
+    try {
+      const resp = await fetch(
+        '/json/list?page=1&sortField=1&sortType=0&folderSN=0&isUnread=false',
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        }
+      );
+      if (resp.ok) {
+        const json = await resp.json();
+        if (json && Array.isArray(json.mailData)) {
+          for (const m of json.mailData) {
+            const sn = String(m.mailSN || '');
+            const subject = (m.subject || '(제목 없음)')
+              .replace(/&lt;/g, '<')
+              .replace(/&gt;/g, '>')
+              .replace(/&amp;/g, '&');
+            const sender = m.from ? m.from.name || m.from.email || '' : '';
+            const date = m.sentTime ? new Date(m.sentTime * 1000).toLocaleString('ko-KR') : '';
+            const unread = m.status ? (m.status & 1) === 0 : false;
+            const key = `${sn}:${subject}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              mails.push({
+                mailSn: sn,
+                subject,
+                sender,
+                date,
+                unread,
+                url: `https://mail.naver.com/v2/read/0/${sn}`,
+              });
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 2. Extract mail list items from rendered DOM (supports Naver Mail v2 & classic DOM structures)
     const itemEls = document.querySelectorAll(
       'li.mail_item, div.mail_item, ul.mail_list > li, [class*="mail_item"], tr[mailsn]'
     );
@@ -30,7 +69,7 @@
       let date = (dateEl ? dateEl.innerText : '').replace(/\s+/g, ' ').trim();
       const href = linkEl ? linkEl.href : '';
       const mailSnMatch =
-        (href && href.match(/\/read\/(\d+)/)) ||
+        (href && href.match(/\/read\/(?:\d+\/)?(\d+)/)) ||
         (el.getAttribute('data-mailsn') ? [null, el.getAttribute('data-mailsn')] : null);
       const mailSn = mailSnMatch ? mailSnMatch[1] : `dom-${idx}`;
 
@@ -49,11 +88,11 @@
         sender: sender || '알 수 없음',
         date: date || '',
         unread: isUnread,
-        url: href || window.location.href,
+        url: href || (mailSnMatch ? `https://mail.naver.com/v2/read/0/${mailSn}` : window.location.href),
       });
     });
 
-    // 2. Extract currently open email body if viewing an email
+    // 3. Extract currently open email body if viewing an email
     let openMail = null;
     const viewBodyEl = document.querySelector(
       '.mail_view_contents, .mail_view_body, #readFrame, [class*="mail_view_contents"]'
@@ -86,19 +125,19 @@
     };
   }
 
-  function pushToAgyServer() {
+  async function pushToAgyServer() {
     try {
-      const payload = extractNaverMailFromDom();
+      const payload = await extractNaverMail();
       if (payload.mails.length === 0 && !payload.openMail) return;
-      fetch(SERVER_URL, {
+      await fetch(SERVER_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      }).catch(() => {});
+      });
     } catch (_) {}
   }
 
-  // Initial sync & periodic sync on DOM changes
-  setTimeout(pushToAgyServer, 1200);
+  // Initial sync & periodic sync
+  setTimeout(pushToAgyServer, 1000);
   setInterval(pushToAgyServer, 4000);
 })();

@@ -1,0 +1,75 @@
+#!/usr/bin/env node
+/**
+ * Send a message/prompt or notice directly to a running agy-web session.
+ * Usage:
+ *   agy-web-send "메시지 내용"
+ *   agy-web-send --no-submit "입력창에만 텍스트 넣기"
+ *   agy-web-send --session session-primary "메시지"
+ */
+const { WebSocket } = require('ws');
+
+const args = process.argv.slice(2);
+let sessionId = 'session-primary';
+let submit = true;
+const textParts = [];
+
+for (let i = 0; i < args.length; i++) {
+  const a = args[i];
+  if (a === '--no-submit' || a === '-n') {
+    submit = false;
+  } else if ((a === '--session' || a === '-s') && args[i + 1]) {
+    sessionId = args[++i];
+  } else {
+    textParts.push(a);
+  }
+}
+
+const text = textParts.join(' ');
+if (!text) {
+  console.error('사용법: agy-web-send [--no-submit] [--session <id>] "전송할 메시지"');
+  process.exit(1);
+}
+
+const port = process.env.PORT || '3080';
+const baseUrl = `http://127.0.0.1:${port}`;
+
+(async () => {
+  // 1. Try REST API /api/send first
+  try {
+    const res = await fetch(`${baseUrl}/api/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, text, submit }),
+    });
+    if (res.ok) {
+      console.log(`✅ agy-web (${sessionId}) 전송 완료`);
+      process.exit(0);
+    }
+  } catch (_) {}
+
+  // 2. Fallback to direct WebSocket input (works even on older server instances)
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?sessionId=${encodeURIComponent(sessionId)}`);
+  ws.on('open', () => {
+    ws.send(JSON.stringify({ type: 'input', data: text }));
+    if (submit) {
+      setTimeout(() => {
+        ws.send(JSON.stringify({ type: 'input', data: '\r' }));
+        setTimeout(() => {
+          console.log(`✅ agy-web (${sessionId}) WebSocket 전송 완료`);
+          ws.close();
+          process.exit(0);
+        }, 80);
+      }, 60);
+    } else {
+      setTimeout(() => {
+        console.log(`✅ agy-web (${sessionId}) 입력창 전달 완료`);
+        ws.close();
+        process.exit(0);
+      }, 80);
+    }
+  });
+  ws.on('error', (err) => {
+    console.error(`❌ agy-web 연결 실패: ${err.message}`);
+    process.exit(1);
+  });
+})();

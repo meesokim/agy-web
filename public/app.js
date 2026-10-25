@@ -2,7 +2,7 @@
   const STORAGE_ACTIVE_SESSION_KEY = 'agy_web_active_session_id';
 
   // State
-  let defaultCwd = 'C:\\Users\\meesokim';
+  let defaultCwd = '/home/msx';
   let activeSessionId = localStorage.getItem(STORAGE_ACTIVE_SESSION_KEY) || null;
   const clientSessions = new Map();
 
@@ -96,6 +96,8 @@
     });
   }
 
+  const IMAGE_URI_RE = /\.(png|jpe?g|gif|webp|bmp|svg|ico|avif)(\?.*)?$/i;
+
   /**
    * Open an http(s):// or file:// link from the terminal or server event.
    */
@@ -110,7 +112,32 @@
     lastOpenedUrl = uri;
     lastOpenedTime = now;
 
-    if (uri.startsWith('file://') || /^[A-Za-z]:\\/.test(uri)) {
+    if (uri.startsWith('file://') || /^[A-Za-z]:\\/.test(uri) || uri.startsWith('/')) {
+      const cleanPath = uri
+        .replace(/^file:\/\//i, '')
+        .replace(/#L\d+.*$/, '');
+      if (IMAGE_URI_RE.test(cleanPath)) {
+        const decodedPath = (() => {
+          try {
+            return decodeURIComponent(cleanPath);
+          } catch (_) {
+            return cleanPath;
+          }
+        })();
+        fetch('/api/show-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: decodedPath }),
+        }).catch(() => {
+          renderImageInlineInTerminal({
+            src: `/api/local-image?path=${encodeURIComponent(decodedPath)}&t=${Date.now()}`,
+            filePath: decodedPath,
+            title: decodedPath.split(/[\\/]/).pop() || '이미지',
+          });
+        });
+        return;
+      }
+
       fetch('/api/open-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -120,6 +147,14 @@
     }
 
     if (/^https?:\/\//i.test(uri)) {
+      if (IMAGE_URI_RE.test(uri)) {
+        showImageInDock({
+          src: uri,
+          url: uri,
+          title: uri.split('/').pop() || '이미지',
+        });
+        return;
+      }
       const { key, targetName } = getStableTabTarget(uri);
       const existingWin = openedTabWindows.get(key);
       if (existingWin && !existingWin.closed) {
@@ -230,7 +265,32 @@
       term.unicode.activeVersion = '11';
     }
 
+    if (window.ImageAddon && window.ImageAddon.ImageAddon) {
+      const imageAddon = new window.ImageAddon.ImageAddon({
+        enableSizeReports: false,
+        iipSupport: true,
+        sixelSupport: true,
+        showPlaceholder: true,
+      });
+      term.loadAddon(imageAddon);
+    }
+
     term.open(paneEl);
+
+    term.parser?.registerOscHandler(7777, (data) => {
+      try {
+        const m = data.match(/id=([^;]+)/);
+        const id = m ? m[1] : '';
+        const item = sessionInlineItems.get(id);
+        if (item) {
+          const entry = clientSessions.get(sessionId);
+          if (entry) {
+            attachDecorationAtCurrentLine(entry, item);
+          }
+        }
+      } catch (_) {}
+      return true;
+    });
 
     // Allow single left-click on hovered links even when TUI Mouse Tracking Mode (?1000h) is active
     let mouseDownPos = null;
@@ -377,34 +437,77 @@
       updateToolbarStatus();
     };
 
+    function compactTerminalProgress(raw) {
+      if (!raw || typeof raw !== 'string') return raw;
+      return raw
+        .replace(/ \x1b\[38;2;147;161;161m\([^)\r\n]*\)(?:\x1b\[m)?/g, '')
+        .replace(/(\x1b\[\?7[hl])\x1b\[\d+G/g, '$1\x1b[K');
+    }
+
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'init') {
           entry.meta = msg.session;
           entry.isReplaying = true;
-          // Clear terminal and replay server scrollback on initial attach / reconnect without firing onData
+          if (Array.isArray(msg.inlineItems)) {
+            for (const it of msg.inlineItems) {
+              sessionInlineItems.set(it.id, it);
+            }
+          }
+          // Fit terminal to viewport before reset and write so columns/rows match exactly
+          entry.fitAddon.fit();
           entry.term.reset();
           if (msg.scrollback) {
-            entry.term.write(msg.scrollback, () => {
+            entry.term.write(compactTerminalProgress(msg.scrollback), () => {
               entry.isReplaying = false;
               entry.initialized = true;
               renderTabs();
               updateToolbarStatus();
-              fitActiveTerminal();
             });
           } else {
             entry.isReplaying = false;
             entry.initialized = true;
             renderTabs();
             updateToolbarStatus();
-            fitActiveTerminal();
           }
         } else if (msg.type === 'output') {
-          entry.term.write(msg.data);
+          entry.term.write(compactTerminalProgress(msg.data));
         } else if (msg.type === 'open_url') {
           if (msg.url) {
             openTerminalLink(msg.url, true);
+          }
+        } else if (msg.type === 'show_image') {
+          if (msg.image) {
+            const inlineItem = {
+              id: msg.image.id,
+              title: msg.image.title || 'Image',
+              html: `<img src="${msg.image.src}" alt="${msg.image.title || ''}" />`,
+              kind: 'Image',
+              rows: 14,
+            };
+            sessionInlineItems.set(inlineItem.id, inlineItem);
+            cachedImages = [
+              msg.image,
+              ...cachedImages.filter((it) => it.src !== msg.image.src),
+            ].slice(0, 50);
+            if (hubPanelImages && !hubPanelImages.hidden) {
+              renderImageGalleryPanel();
+            }
+          }
+        } else if (msg.type === 'show_html') {
+          if (msg.item && msg.item.html) {
+            sessionInlineItems.set(msg.item.id, msg.item);
+          }
+        } else if (msg.type === 'clear_html') {
+          sessionInlineItems.clear();
+        } else if (msg.type === 'input_logged') {
+          if (msg.entry) {
+            cachedInputHistory.unshift(msg.entry);
+            if (cachedInputHistory.length > 500) cachedInputHistory.length = 500;
+            if (hubPanelInputHistory && !hubPanelInputHistory.hidden) {
+              renderInputHistoryPanel();
+            }
           }
         } else if (msg.type === 'exit') {
           entry.meta.exited = true;
@@ -740,7 +843,7 @@
   // Event Listeners: Quick CLI Pipeline Actions
   btnRunAgy.addEventListener('click', () => {
     if (!activeSessionId) return;
-    sendInput(activeSessionId, 'agy\r');
+    sendInput(activeSessionId, 'agy --effort low\r');
     clientSessions.get(activeSessionId)?.term.focus();
   });
 
@@ -764,6 +867,7 @@
   });
 
   btnClearTerm.addEventListener('click', () => {
+    clearConsoleHtmlBlocks();
     if (!activeSessionId) return;
     const entry = clientSessions.get(activeSessionId);
     if (entry && entry.ws && entry.ws.readyState === WebSocket.OPEN) {
@@ -792,6 +896,9 @@
   const hubTabs = Array.from(document.querySelectorAll('.hub-tab'));
   const hubPanelInternal = document.getElementById('hubPanelInternal');
   const hubPanelNaverMail = document.getElementById('hubPanelNaverMail');
+  const hubPanelNaverCafe = document.getElementById('hubPanelNaverCafe');
+  const hubPanelInputHistory = document.getElementById('hubPanelInputHistory');
+  const hubPanelImages = document.getElementById('hubPanelImages');
   const hubPanelBrowserBm = document.getElementById('hubPanelBrowserBm');
   const hubPanelOpenTabs = document.getElementById('hubPanelOpenTabs');
 
@@ -812,6 +919,202 @@
   let internalBookmarks = [];
   let cachedBrowserBookmarks = [];
   let latestNaverMailData = null;
+  let latestNaverCafeData = null;
+  let cachedInputHistory = [];
+  let cachedImages = [];
+  let currentDockImage = null;
+  let isImageZoomed = false;
+
+  const imageOpenForm = document.getElementById('imageOpenForm');
+  const imagePathInput = document.getElementById('imagePathInput');
+  const imageGalleryList = document.getElementById('imageGalleryList');
+
+  const sessionInlineItems = new Map();
+
+  function getTerminalCellDimensions(term) {
+    try {
+      const c = term._core?._renderService?.dimensions?.css?.cell;
+      if (c && c.height > 0 && c.width > 0) {
+        return { width: c.width, height: c.height };
+      }
+    } catch (_) {}
+    const screenEl = term.element?.querySelector('.xterm-screen');
+    if (screenEl && term.rows && term.cols) {
+      return {
+        width: screenEl.clientWidth / term.cols || 8.4,
+        height: screenEl.clientHeight / term.rows || 17,
+      };
+    }
+    return { width: 8.4, height: 17 };
+  }
+
+  function attachDecorationAtCurrentLine(entry, item) {
+    if (!entry || !entry.term || !item) return;
+    const term = entry.term;
+    const marker = term.registerMarker(0);
+    if (!marker) return;
+
+    const rowsNeeded = item.rows || 5;
+    const decoration = term.registerDecoration({
+      marker,
+      x: 2,
+      width: Math.max(20, term.cols - 3),
+      height: rowsNeeded,
+      layer: 'top',
+    });
+    if (!decoration) return;
+
+    const syncPosition = (el) => {
+      if (!el || marker.isDisposed) return;
+      const dims = getTerminalCellDimensions(term);
+      const ydisp = term.buffer.active.viewportY;
+      const rowOffset = marker.line - ydisp;
+
+      if (rowOffset + rowsNeeded > 0 && rowOffset < term.rows) {
+        el.style.display = 'block';
+        el.style.position = 'absolute';
+        el.style.top = `${Math.round(rowOffset * dims.height)}px`;
+        el.style.left = `${Math.round(dims.width * 2)}px`;
+        el.style.width = `${Math.max(120, Math.round((term.cols - 3) * dims.width))}px`;
+        el.style.height = `${Math.round(rowsNeeded * dims.height)}px`;
+        el.style.pointerEvents = 'none';
+      } else {
+        el.style.display = 'none';
+      }
+    };
+
+    decoration.onRender((el) => {
+      if (!el.dataset.mounted) {
+        el.dataset.mounted = '1';
+        const card = document.createElement('div');
+        card.className = 'inline-console-card';
+        card.innerHTML = `
+          <div class="inline-card-header">
+            <span class="inline-card-tag">${item.kind === 'Image' ? '🖼️' : '📊'} ${item.title || '출력'}</span>
+            <div class="inline-card-actions">
+              <button type="button" class="inline-btn-copy" title="텍스트/표 복사">📋 복사</button>
+            </div>
+          </div>
+          <div class="inline-card-body">${item.html}</div>
+        `;
+        card.querySelector('.inline-btn-copy')?.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const bodyEl = card.querySelector('.inline-card-body');
+          const textToCopy = bodyEl?.innerText || item.html;
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(textToCopy).catch(() => {});
+          }
+        });
+        el.appendChild(card);
+      }
+      syncPosition(el);
+    });
+
+    const sDisp = term.onScroll(() => decoration.element && syncPosition(decoration.element));
+    const rDisp = term.onRender(() => decoration.element && syncPosition(decoration.element));
+
+    marker.onDispose(() => {
+      sDisp.dispose();
+      rDisp.dispose();
+    });
+  }
+
+  function showImageInDock(imgObj) {
+    if (!imgObj || !imgObj.src) return;
+    fetch('/api/show-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        imgObj.url
+          ? { url: imgObj.src, title: imgObj.title || 'Image' }
+          : { path: imgObj.filePath || imgObj.src, title: imgObj.title || 'Image' }
+      ),
+    }).catch(() => {});
+  }
+
+  async function fetchImagesGallery() {
+    if (!imageGalleryList) return;
+    try {
+      const res = await fetch('/api/images');
+      const data = await res.json();
+      cachedImages = Array.isArray(data.images) ? data.images : cachedImages;
+      renderImageGalleryPanel();
+    } catch (_) {
+      renderImageGalleryPanel();
+    }
+  }
+
+  function renderImageGalleryPanel() {
+    if (!imageGalleryList) return;
+    imageGalleryList.innerHTML = '';
+
+    if (cachedImages.length === 0) {
+      imageGalleryList.innerHTML = `
+        <div class="hub-note">
+          표시된 이미지가 없습니다.<br/>
+          • 위 입력창에 로컬 이미지 경로(예: <code>/home/msx/.../image.png</code>)나 이미지 URL을 입력해 바로 볼 수 있습니다.<br/>
+          • 터미널에서 <code>agy-web-image 파일경로.png</code> 또는 <code>xdg-open 파일경로.png</code>를 실행하거나 터미널 내 이미지 링크를 클릭해도 화면에 바로 표시됩니다.
+        </div>`;
+      return;
+    }
+
+    for (const img of cachedImages) {
+      const card = document.createElement('div');
+      card.className = 'hub-item';
+      card.style.flexDirection = 'column';
+      card.style.alignItems = 'stretch';
+      card.style.gap = '6px';
+
+      const topRow = document.createElement('div');
+      topRow.style.display = 'flex';
+      topRow.style.justifyContent = 'space-between';
+      topRow.style.alignItems = 'center';
+
+      const tEl = document.createElement('div');
+      tEl.className = 'hub-item-title';
+      tEl.textContent = img.title || '이미지';
+
+      const act = document.createElement('div');
+      act.className = 'hub-item-actions';
+
+      const viewBtn = document.createElement('button');
+      viewBtn.className = 'btn btn-chip';
+      viewBtn.textContent = '🖼️ 미리보기';
+      viewBtn.addEventListener('click', () => showImageInDock(img));
+
+      const sendBtn = document.createElement('button');
+      sendBtn.className = 'btn btn-chip';
+      sendBtn.textContent = '⌨️ 경로';
+      sendBtn.addEventListener('click', () =>
+        insertTextToActiveConsole((img.filePath || img.url || '') + ' ')
+      );
+
+      act.appendChild(viewBtn);
+      act.appendChild(sendBtn);
+      topRow.appendChild(tEl);
+      topRow.appendChild(act);
+
+      const thumb = document.createElement('img');
+      thumb.src = img.src;
+      thumb.alt = img.title || '';
+      thumb.style.maxWidth = '100%';
+      thumb.style.maxHeight = '160px';
+      thumb.style.objectFit = 'contain';
+      thumb.style.background = '#0b0e14';
+      thumb.style.borderRadius = '4px';
+      thumb.style.cursor = 'pointer';
+      thumb.addEventListener('click', () => showImageInDock(img));
+
+      const subEl = document.createElement('div');
+      subEl.className = 'hub-item-sub';
+      subEl.textContent = img.filePath || img.url || '';
+
+      card.appendChild(topRow);
+      card.appendChild(thumb);
+      card.appendChild(subEl);
+      imageGalleryList.appendChild(card);
+    }
+  }
 
   const BOOKMARKLET_CODE =
     "javascript:(()=>{const s=[];document.querySelectorAll('li.mail_item,div.mail_item,ul.mail_list>li,[class*=\"mail_item\"],tr[mailsn]').forEach((e,i)=>{const t=e.querySelector('.mail_title_link,.mail_title,strong.mail_title,a[href*=\"/read/\"],.subject')||e.querySelector('a'),f=e.querySelector('.mail_sender,.button_sender,[class*=\"sender\"],.name'),d=e.querySelector('.mail_date,[class*=\"date\"],.time'),l=e.querySelector('a[href*=\"/read/\"],a.mail_title_link');let sub=(t?t.innerText:'').replace(/\\s+/g,' ').replace(/^메일 제목\\s*/,'').trim();if(!sub)return;s.push({mailSn:String(i),subject:sub,sender:(f?f.innerText:'').replace(/\\s+/g,' ').replace(/^보낸 사람\\s*/,'').trim(),date:(d?d.innerText:'').replace(/\\s+/g,' ').trim(),unread:e.classList.contains('unreads')||e.classList.contains('unread'),url:l?l.href:location.href});});let om=null;const vb=document.querySelector('.mail_view_contents,.mail_view_body,#readFrame,[class*=\"mail_view_contents\"]');if(vb){const vt=document.querySelector('.mail_view_title,h4.view_title,[class*=\"mail_view_title\"]');om={subject:vt?vt.innerText.trim():document.title,body:vb.innerText.trim().slice(0,15000),url:location.href};}fetch('http://127.0.0.1:3080/api/naver-mail/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pageUrl:location.href,pageTitle:document.title,mails:s,openMail:om})}).then(()=>alert('AGY 웹 콘솔로 네이버 메일 '+s.length+'건을 전송했습니다!')).catch(e=>alert('전송 실패: '+e));})();";
@@ -959,7 +1262,7 @@
         </div>
         <div style="margin-bottom:8px;">
           <b>방법 2 (Chrome/Edge 확장 프로그램 100% 자동 동기화):</b><br/>
-          브라우저 주소창에 <code>chrome://extensions</code> (또는 <code>edge://extensions</code>) 입력 → 우측 상단 <b>개발자 모드</b> 켜기 → <b>압축해제된 확장 프로그램을 로드합니다</b> 클릭 → <code>C:\\Users\\meesokim\\agy-web\\extension</code> 폴더 선택 시 네이버 메일 탭을 열 때마다 자동으로 읽어옵니다.
+          브라우저 주소창에 <code>chrome://extensions</code> (또는 <code>edge://extensions</code>) 입력 → 우측 상단 <b>개발자 모드</b> 켜기 → <b>압축해제된 확장 프로그램을 로드합니다</b> 클릭 → <code>/home/msx/agy-web/extension</code> 폴더 선택 시 네이버 메일/카페 탭을 열 때마다 자동으로 읽어옵니다.
         </div>
         <div>
           <b>방법 3 (실시간 연동 브라우저 실행):</b><br/>
@@ -1333,6 +1636,411 @@
     return row;
   }
 
+  // =========================================================================
+  // Joined Naver Cafe Article Search
+  // =========================================================================
+  const cafeSelectFilter = document.getElementById('cafeSelectFilter');
+  const cafeSearchForm = document.getElementById('cafeSearchForm');
+  const cafeSearchInput = document.getElementById('cafeSearchInput');
+  const btnSyncJoinedCafes = document.getElementById('btnSyncJoinedCafes');
+  const btnToggleAddCafeForm = document.getElementById('btnToggleAddCafeForm');
+  const btnSendCafeResultsToAgy = document.getElementById('btnSendCafeResultsToAgy');
+  const cafeAddForm = document.getElementById('cafeAddForm');
+  const cafeAddUrlInput = document.getElementById('cafeAddUrlInput');
+  const cafeAddNameInput = document.getElementById('cafeAddNameInput');
+  const naverCafeList = document.getElementById('naverCafeList');
+
+  function updateCafeSelectOptions(joinedCafes = []) {
+    if (!cafeSelectFilter) return;
+    const prevValue = cafeSelectFilter.value;
+    cafeSelectFilter.innerHTML = `<option value="">전체 가입 카페 (${joinedCafes.length}개)</option>`;
+    for (const c of joinedCafes) {
+      const opt = document.createElement('option');
+      const val = c.cafeUrl || c.cafeId;
+      opt.value = val;
+      opt.dataset.cafeId = c.cafeId || '';
+      opt.dataset.cafeUrl = c.cafeUrl || '';
+      opt.textContent = `${c.cafeName || val}${c.cafeUrl ? ` (${c.cafeUrl})` : ''}`;
+      cafeSelectFilter.appendChild(opt);
+    }
+    if (prevValue) {
+      cafeSelectFilter.value = prevValue;
+    }
+  }
+
+  async function fetchNaverCafe() {
+    if (!naverCafeList) return;
+    naverCafeList.innerHTML =
+      '<div class="hub-note">내가 가입한 네이버 카페 목록을 불러오는 중...</div>';
+    try {
+      const res = await fetch('/api/naver-cafe');
+      const data = await res.json();
+      latestNaverCafeData = data;
+      updateCafeSelectOptions(data.joinedCafes || []);
+      renderNaverCafePanel(data);
+    } catch (err) {
+      naverCafeList.innerHTML = `<div class="hub-note">네이버 카페 조회 실패: ${err.message}</div>`;
+    }
+  }
+
+  async function searchNaverCafe(query) {
+    if (!naverCafeList) return;
+    const selectedOpt = cafeSelectFilter?.selectedOptions?.[0];
+    const cafeId = selectedOpt?.dataset?.cafeId || '';
+    const cafeUrl = selectedOpt?.dataset?.cafeUrl || cafeSelectFilter?.value || '';
+
+    naverCafeList.innerHTML = `<div class="hub-note">🔍 가입 카페에서 "<b>${query}</b>" 게시글을 검색 중...</div>`;
+    try {
+      const res = await fetch('/api/naver-cafe/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, cafeId, cafeUrl }),
+      });
+      const data = await res.json();
+      latestNaverCafeData = data;
+      updateCafeSelectOptions(data.joinedCafes || []);
+      renderNaverCafePanel(data);
+    } catch (err) {
+      naverCafeList.innerHTML = `<div class="hub-note">가입 카페 검색 오류: ${err.message}</div>`;
+    }
+  }
+
+  function renderNaverCafePanel(data) {
+    if (!naverCafeList) return;
+    naverCafeList.innerHTML = '';
+
+    const joinedCafes = Array.isArray(data?.joinedCafes) ? data.joinedCafes : [];
+    const articles = Array.isArray(data?.articles) ? data.articles : [];
+    const openArticle = data?.openArticle || null;
+    const lastQuery = data?.lastQuery || '';
+
+    const statusNote = document.createElement('div');
+    statusNote.className = 'hub-note';
+    statusNote.innerHTML = `☕ 가입 카페 <b>${joinedCafes.length}개</b> 등록됨 · 검색 결과 <b>${articles.length}건</b>${
+      lastQuery ? ` (검색어: "${lastQuery}")` : ''
+    }<br/><span style="font-size:11px;color:#8b949e;">Chrome 확장 프로그램(<code>/home/msx/agy-web/extension</code>)을 로드하거나 아래 [+ 가입 카페 직접 등록]으로 카페를 추가하면 가입 카페 글을 즉시 검색합니다.</span>`;
+    naverCafeList.appendChild(statusNote);
+
+    if (openArticle && openArticle.body) {
+      const openHeader = document.createElement('div');
+      openHeader.className = 'hub-section-title';
+      openHeader.textContent = '📖 현재 열려 있는 카페 게시글 본문';
+      naverCafeList.appendChild(openHeader);
+
+      const card = document.createElement('div');
+      card.className = 'hub-item';
+      card.style.flexDirection = 'column';
+      card.style.alignItems = 'stretch';
+
+      const topRow = document.createElement('div');
+      topRow.style.display = 'flex';
+      topRow.style.justifyContent = 'space-between';
+      topRow.style.alignItems = 'center';
+      topRow.style.gap = '8px';
+
+      const tEl = document.createElement('div');
+      tEl.className = 'hub-item-title';
+      tEl.textContent = openArticle.title || '(제목 없음)';
+
+      const sendBtn = document.createElement('button');
+      sendBtn.className = 'btn btn-primary';
+      sendBtn.textContent = '🤖 본문 콘솔 전달';
+      sendBtn.addEventListener('click', () => {
+        insertTextToActiveConsole(
+          `[네이버 카페 게시글] 제목: ${openArticle.title || ''} | 작성자: ${
+            openArticle.author || ''
+          } | 내용: ${openArticle.body.replace(/\r?\n/g, ' ').slice(0, 2000)} `
+        );
+      });
+
+      topRow.appendChild(tEl);
+      topRow.appendChild(sendBtn);
+
+      const pre = document.createElement('pre');
+      pre.style.whiteSpace = 'pre-wrap';
+      pre.style.fontSize = '11.5px';
+      pre.style.color = '#c9d1d9';
+      pre.style.maxHeight = '160px';
+      pre.style.overflowY = 'auto';
+      pre.style.marginTop = '6px';
+      pre.style.padding = '8px';
+      pre.style.background = '#131824';
+      pre.style.borderRadius = '4px';
+      pre.textContent = openArticle.body;
+
+      card.appendChild(topRow);
+      card.appendChild(pre);
+      naverCafeList.appendChild(card);
+    }
+
+    if (articles.length > 0) {
+      const artHeader = document.createElement('div');
+      artHeader.className = 'hub-section-title';
+      artHeader.textContent = `📝 카페 게시글 검색 결과 (${articles.length}건)`;
+      naverCafeList.appendChild(artHeader);
+
+      for (const art of articles) {
+        const row = document.createElement('div');
+        row.className = 'hub-item';
+
+        const info = document.createElement('div');
+        info.className = 'hub-item-info';
+
+        const titleEl = document.createElement('div');
+        titleEl.className = 'hub-item-title';
+        titleEl.textContent = `[${art.cafeName || art.cafeUrl || '카페'}] ${art.title}`;
+
+        const subEl = document.createElement('div');
+        subEl.className = 'hub-item-sub';
+        const metaParts = [art.author, art.date, art.snippet].filter(Boolean);
+        subEl.textContent = metaParts.join(' · ') || art.url;
+
+        info.appendChild(titleEl);
+        info.appendChild(subEl);
+
+        const actions = document.createElement('div');
+        actions.className = 'hub-item-actions';
+
+        if (art.url) {
+          const openBtn = document.createElement('button');
+          openBtn.className = 'btn btn-chip';
+          openBtn.textContent = '🔗 열기';
+          openBtn.addEventListener('click', () => openTerminalLink(art.url, false));
+          actions.appendChild(openBtn);
+        }
+
+        const sendBtn = document.createElement('button');
+        sendBtn.className = 'btn btn-chip';
+        sendBtn.textContent = '🤖 콘솔전달';
+        sendBtn.addEventListener('click', () => {
+          insertTextToActiveConsole(
+            `[네이버 카페 글] 카페: ${art.cafeName || art.cafeUrl || '-'} | 제목: ${art.title} | 요약: ${
+              art.snippet || '-'
+            } | 링크: ${art.url || ''} `
+          );
+        });
+        actions.appendChild(sendBtn);
+
+        row.appendChild(info);
+        row.appendChild(actions);
+        naverCafeList.appendChild(row);
+      }
+    } else if (lastQuery) {
+      const emptyNote = document.createElement('div');
+      emptyNote.className = 'hub-note';
+      emptyNote.innerHTML = `"<b>${lastQuery}</b>"에 대한 검색 결과가 없습니다. 브라우저에서 직접 검색 결과를 확인하려면 아래 버튼을 클릭하세요.<br/>`;
+      const openBrowserSearchBtn = document.createElement('button');
+      openBrowserSearchBtn.className = 'btn btn-subtle';
+      openBrowserSearchBtn.style.marginTop = '6px';
+      openBrowserSearchBtn.textContent = '🌐 네이버 카페 검색 페이지 열기';
+      openBrowserSearchBtn.addEventListener('click', () => {
+        const selectedSlug = cafeSelectFilter?.value;
+        const targetUrl = selectedSlug
+          ? `https://cafe.naver.com/${selectedSlug}?iframe_url=/ArticleSearchList.nhn%3Fsearch.query=${encodeURIComponent(lastQuery)}`
+          : `https://section.cafe.naver.com/ca-fe/home/search/articles?q=${encodeURIComponent(lastQuery)}`;
+        openTerminalLink(targetUrl, false);
+      });
+      emptyNote.appendChild(openBrowserSearchBtn);
+      naverCafeList.appendChild(emptyNote);
+    }
+
+    const cafeHeader = document.createElement('div');
+    cafeHeader.className = 'hub-section-title';
+    cafeHeader.textContent = `🏘️ 내 가입 카페 목록 (${joinedCafes.length}개)`;
+    naverCafeList.appendChild(cafeHeader);
+
+    if (joinedCafes.length === 0) {
+      const noCafe = document.createElement('div');
+      noCafe.className = 'hub-note';
+      noCafe.textContent =
+        '등록된 가입 카페가 없습니다. 상단 [+ 가입 카페 직접 등록] 버튼을 눌러 자주 찾는 카페 주소(예: https://cafe.naver.com/중고나라)를 추가하거나, 브라우저에서 네이버 카페 홈(section.cafe.naver.com)을 열어 동기화하세요.';
+      naverCafeList.appendChild(noCafe);
+    } else {
+      for (const c of joinedCafes) {
+        const row = document.createElement('div');
+        row.className = 'hub-item';
+
+        const info = document.createElement('div');
+        info.className = 'hub-item-info';
+
+        const titleEl = document.createElement('div');
+        titleEl.className = 'hub-item-title';
+        titleEl.textContent = `${c.cafeName}${c.memberLevelName ? ` (${c.memberLevelName})` : ''}`;
+
+        const subEl = document.createElement('div');
+        subEl.className = 'hub-item-sub';
+        subEl.textContent = c.url || c.cafeUrl || c.cafeId;
+
+        info.appendChild(titleEl);
+        info.appendChild(subEl);
+
+        const actions = document.createElement('div');
+        actions.className = 'hub-item-actions';
+
+        const filterBtn = document.createElement('button');
+        filterBtn.className = 'btn btn-chip';
+        filterBtn.textContent = '🔍 이 카페 선택';
+        filterBtn.addEventListener('click', () => {
+          if (cafeSelectFilter) {
+            cafeSelectFilter.value = c.cafeUrl || c.cafeId;
+            cafeSearchInput?.focus();
+          }
+        });
+        actions.appendChild(filterBtn);
+
+        if (c.url) {
+          const openBtn = document.createElement('button');
+          openBtn.className = 'btn btn-chip';
+          openBtn.textContent = '🔗';
+          openBtn.title = '카페 열기';
+          openBtn.addEventListener('click', () => openTerminalLink(c.url, false));
+          actions.appendChild(openBtn);
+        }
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-chip';
+        delBtn.textContent = '🗑️';
+        delBtn.title = '목록에서 제거';
+        delBtn.addEventListener('click', async () => {
+          const key = c.cafeUrl || c.cafeId;
+          const res = await fetch(`/api/naver-cafe/cafes/${encodeURIComponent(key)}`, {
+            method: 'DELETE',
+          });
+          const updated = await res.json();
+          if (latestNaverCafeData) {
+            latestNaverCafeData.joinedCafes = updated.joinedCafes || [];
+            updateCafeSelectOptions(latestNaverCafeData.joinedCafes);
+            renderNaverCafePanel(latestNaverCafeData);
+          }
+        });
+        actions.appendChild(delBtn);
+
+        row.appendChild(info);
+        row.appendChild(actions);
+        naverCafeList.appendChild(row);
+      }
+    }
+  }
+
+  // =========================================================================
+  // Web Input History Log
+  // =========================================================================
+  const inputHistorySearch = document.getElementById('inputHistorySearch');
+  const inputHistorySessionFilter = document.getElementById('inputHistorySessionFilter');
+  const btnRefreshInputHistory = document.getElementById('btnRefreshInputHistory');
+  const btnDownloadInputHistory = document.getElementById('btnDownloadInputHistory');
+  const btnClearInputHistory = document.getElementById('btnClearInputHistory');
+  const inputHistoryList = document.getElementById('inputHistoryList');
+
+  async function fetchInputHistory() {
+    if (!inputHistoryList) return;
+    try {
+      const res = await fetch('/api/input-history');
+      const data = await res.json();
+      cachedInputHistory = Array.isArray(data.history) ? data.history : [];
+      renderInputHistoryPanel();
+    } catch (err) {
+      inputHistoryList.innerHTML = `<div class="hub-note">입력 히스토리 조회 실패: ${err.message}</div>`;
+    }
+  }
+
+  function renderInputHistoryPanel() {
+    if (!inputHistoryList) return;
+    inputHistoryList.innerHTML = '';
+
+    const kw = (inputHistorySearch?.value || '').trim().toLowerCase();
+    const currentOnly = Boolean(inputHistorySessionFilter?.checked);
+
+    const filtered = cachedInputHistory.filter((item) => {
+      if (currentOnly && activeSessionId && item.sessionId !== activeSessionId) {
+        return false;
+      }
+      if (kw) {
+        const hay = `${item.text || ''} ${item.sessionTitle || ''} ${item.cwd || ''}`.toLowerCase();
+        if (!hay.includes(kw)) return false;
+      }
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      inputHistoryList.innerHTML =
+        '<div class="hub-note">기록된 웹 콘솔 입력 히스토리가 없습니다. 웹 터미널에서 명령어나 프롬프트를 입력하고 Enter를 누르면 자동으로 이곳에 기록됩니다.</div>';
+      return;
+    }
+
+    const summaryHeader = document.createElement('div');
+    summaryHeader.className = 'hub-section-title';
+    summaryHeader.textContent = `📜 웹 입력 히스토리 로그 (${filtered.length}건)`;
+    inputHistoryList.appendChild(summaryHeader);
+
+    for (const item of filtered) {
+      const row = document.createElement('div');
+      row.className = 'hub-item';
+
+      const info = document.createElement('div');
+      info.className = 'hub-item-info';
+
+      const titleEl = document.createElement('div');
+      titleEl.className = 'hub-item-title';
+      titleEl.style.fontFamily = '"Cascadia Code", "JetBrains Mono", "D2Coding", monospace';
+      titleEl.style.whiteSpace = 'pre-wrap';
+      titleEl.style.wordBreak = 'break-all';
+      titleEl.textContent = item.text;
+
+      const subEl = document.createElement('div');
+      subEl.className = 'hub-item-sub';
+      const timeStr = item.createdAt ? new Date(item.createdAt).toLocaleString('ko-KR') : '';
+      subEl.textContent = `${timeStr} · ${item.sessionTitle || item.sessionId} (${item.cwd || '~'})`;
+
+      info.appendChild(titleEl);
+      info.appendChild(subEl);
+
+      const actions = document.createElement('div');
+      actions.className = 'hub-item-actions';
+
+      const insertBtn = document.createElement('button');
+      insertBtn.className = 'btn btn-chip';
+      insertBtn.textContent = '⌨️ 입력';
+      insertBtn.title = '현재 콘솔에 텍스트 붙여넣기 (Enter 제외)';
+      insertBtn.addEventListener('click', () => insertTextToActiveConsole(item.text));
+
+      const runBtn = document.createElement('button');
+      runBtn.className = 'btn btn-chip';
+      runBtn.textContent = '🚀 실행';
+      runBtn.title = '현재 콘솔에 입력 후 즉시 실행 (Enter 포함)';
+      runBtn.addEventListener('click', () => insertTextToActiveConsole(item.text + '\r'));
+
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'btn btn-chip';
+      copyBtn.textContent = '📋';
+      copyBtn.title = '클립보드에 복사';
+      copyBtn.addEventListener('click', () => {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(item.text).catch(() => {});
+        }
+      });
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn btn-chip';
+      delBtn.textContent = '🗑️';
+      delBtn.title = '이 기록 삭제';
+      delBtn.addEventListener('click', async () => {
+        await fetch(`/api/input-history/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+        cachedInputHistory = cachedInputHistory.filter((h) => h.id !== item.id);
+        renderInputHistoryPanel();
+      });
+
+      actions.appendChild(insertBtn);
+      actions.appendChild(runBtn);
+      actions.appendChild(copyBtn);
+      actions.appendChild(delBtn);
+
+      row.appendChild(info);
+      row.appendChild(actions);
+      inputHistoryList.appendChild(row);
+    }
+  }
+
   function switchHubTab(tabName) {
     hubDrawer.hidden = false;
     for (const btn of hubTabs) {
@@ -1340,6 +2048,9 @@
     }
     hubPanelInternal.hidden = tabName !== 'internal';
     if (hubPanelNaverMail) hubPanelNaverMail.hidden = tabName !== 'naver-mail';
+    if (hubPanelNaverCafe) hubPanelNaverCafe.hidden = tabName !== 'naver-cafe';
+    if (hubPanelInputHistory) hubPanelInputHistory.hidden = tabName !== 'input-history';
+    if (hubPanelImages) hubPanelImages.hidden = tabName !== 'images';
     hubPanelBrowserBm.hidden = tabName !== 'browser-bm';
     hubPanelOpenTabs.hidden = tabName !== 'open-tabs';
 
@@ -1347,6 +2058,14 @@
       fetchInternalBookmarks();
     } else if (tabName === 'naver-mail') {
       fetchNaverMail();
+    } else if (tabName === 'naver-cafe') {
+      fetchNaverCafe();
+      setTimeout(() => cafeSearchInput?.focus(), 50);
+    } else if (tabName === 'input-history') {
+      fetchInputHistory();
+    } else if (tabName === 'images') {
+      fetchImagesGallery();
+      setTimeout(() => imagePathInput?.focus(), 50);
     } else if (tabName === 'browser-bm') {
       fetchBrowserBookmarks();
     } else if (tabName === 'open-tabs') {
@@ -1371,8 +2090,134 @@
     switchHubTab('naver-mail');
   });
 
+  document.getElementById('btnOpenNaverCafeSearch')?.addEventListener('click', () => {
+    switchHubTab('naver-cafe');
+  });
+
+  document.getElementById('btnOpenInputHistory')?.addEventListener('click', () => {
+    switchHubTab('input-history');
+  });
+
+  document.getElementById('btnOpenImageGallery')?.addEventListener('click', () => {
+    switchHubTab('images');
+  });
+
+  imageOpenForm?.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const val = imagePathInput?.value?.trim();
+    if (!val) return;
+    const isHttp = /^https?:\/\//i.test(val);
+    const res = await fetch('/api/show-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(isHttp ? { url: val } : { path: val }),
+    });
+    if (res.ok) {
+      imagePathInput.value = '';
+      fetchImagesGallery();
+    } else {
+      // Fallback: render directly even if server wasn't restarted yet
+      const entry = {
+        src: isHttp ? val : `/api/local-image?path=${encodeURIComponent(val)}`,
+        filePath: isHttp ? '' : val,
+        url: isHttp ? val : '',
+        title: val.split(/[\\/]/).pop() || '이미지',
+      };
+      showImageInDock(entry);
+    }
+  });
+
   document.getElementById('btnRefreshNaverMail')?.addEventListener('click', () => {
     fetchNaverMail();
+  });
+
+  cafeSearchForm?.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const q = cafeSearchInput?.value?.trim();
+    if (!q) return;
+    searchNaverCafe(q);
+  });
+
+  btnSyncJoinedCafes?.addEventListener('click', () => {
+    fetchNaverCafe();
+  });
+
+  btnToggleAddCafeForm?.addEventListener('click', () => {
+    if (cafeAddForm) {
+      cafeAddForm.hidden = !cafeAddForm.hidden;
+      if (!cafeAddForm.hidden) cafeAddUrlInput?.focus();
+    }
+  });
+
+  cafeAddForm?.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const cafeUrl = cafeAddUrlInput?.value?.trim();
+    const cafeName = cafeAddNameInput?.value?.trim();
+    if (!cafeUrl) return;
+    const res = await fetch('/api/naver-cafe/cafes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cafeUrl, cafeName }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      cafeAddUrlInput.value = '';
+      cafeAddNameInput.value = '';
+      cafeAddForm.hidden = true;
+      if (!latestNaverCafeData) latestNaverCafeData = {};
+      latestNaverCafeData.joinedCafes = data.joinedCafes || [];
+      updateCafeSelectOptions(latestNaverCafeData.joinedCafes);
+      renderNaverCafePanel(latestNaverCafeData);
+    }
+  });
+
+  btnSendCafeResultsToAgy?.addEventListener('click', () => {
+    const articles = latestNaverCafeData?.articles || [];
+    if (articles.length === 0) {
+      alert('먼저 가입 카페 게시글을 검색해 주세요.');
+      return;
+    }
+    const summary = articles
+      .slice(0, 12)
+      .map(
+        (a, i) =>
+          `${i + 1}. [${a.cafeName || a.cafeUrl || '카페'}] ${a.title} (${a.url || ''})`
+      )
+      .join(' / ');
+    insertTextToActiveConsole(
+      `다음은 내가 가입한 네이버 카페에서 "${latestNaverCafeData?.lastQuery || ''}"로 검색한 게시글 목록이야: ${summary} — 핵심 내용을 정리해줘.`
+    );
+  });
+
+  inputHistorySearch?.addEventListener('input', () => renderInputHistoryPanel());
+  inputHistorySessionFilter?.addEventListener('change', () => renderInputHistoryPanel());
+  btnRefreshInputHistory?.addEventListener('click', () => fetchInputHistory());
+
+  btnDownloadInputHistory?.addEventListener('click', () => {
+    if (cachedInputHistory.length === 0) {
+      alert('다운로드할 입력 히스토리가 없습니다.');
+      return;
+    }
+    const lines = cachedInputHistory.map(
+      (item) =>
+        `[${item.createdAt || ''}] (${item.sessionTitle || item.sessionId} @ ${item.cwd || ''}) ${item.text}`
+    );
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `agy-web-input-history-${new Date().toISOString().slice(0, 10)}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  btnClearInputHistory?.addEventListener('click', async () => {
+    if (!confirm('웹 입력 히스토리 로그를 모두 삭제하시겠습니까?')) return;
+    await fetch('/api/input-history', { method: 'DELETE' });
+    cachedInputHistory = [];
+    renderInputHistoryPanel();
   });
 
   document.getElementById('btnSendAllMailsToAgy')?.addEventListener('click', () => {

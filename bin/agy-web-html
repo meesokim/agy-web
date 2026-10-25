@@ -1,0 +1,64 @@
+#!/usr/bin/env node
+/**
+ * Render HTML directly inside the AGY Web Console screen.
+ * Usage:
+ *   agy-web-html "<div style='color:#58a6ff'>Hello HTML</div>"
+ *   agy-web-html /path/to/page.html
+ *   cat snippet.html | agy-web-html
+ */
+const fs = require('fs');
+const path = require('path');
+
+const args = process.argv.slice(2);
+const port = process.env.PORT || '3080';
+const baseUrl = `http://127.0.0.1:${port}`;
+
+async function readStdin() {
+  if (process.stdin.isTTY) return '';
+  const chunks = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+(async () => {
+  let htmlContent = '';
+  let filePath = '';
+  let title = 'HTML Output';
+
+  if (args.length > 0) {
+    const first = args[0];
+    const candidatePath = path.resolve(first);
+    if (!first.trim().startsWith('<') && fs.existsSync(candidatePath) && fs.statSync(candidatePath).isFile()) {
+      filePath = candidatePath;
+      title = args[1] || path.basename(candidatePath);
+      htmlContent = fs.readFileSync(candidatePath, 'utf8');
+    } else {
+      htmlContent = args.join(' ');
+    }
+  } else {
+    htmlContent = await readStdin();
+  }
+
+  if (!htmlContent || !htmlContent.trim()) {
+    console.error('사용법: agy-web-html "<HTML태그>" 또는 agy-web-html <파일.html>');
+    process.exit(1);
+  }
+
+  // 1. Try POST /api/show-html
+  try {
+    const res = await fetch(`${baseUrl}/api/show-html`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html: htmlContent, path: filePath, title }),
+    });
+    if (res.ok) {
+      process.exit(0);
+    }
+  } catch (_) {}
+
+  // 2. Fallback: emit OSC 7777 directly to stdout
+  const b64 = Buffer.from(htmlContent, 'utf8').toString('base64');
+  process.stdout.write(`\x1b]7777;html;${b64}\x07\n`);
+})();

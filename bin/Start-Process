@@ -21,12 +21,28 @@ TARGET="${TARGET%\"}"
 TARGET="${TARGET#\'}"
 TARGET="${TARGET%\'}"
 
-powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
-  \$t = '$TARGET';
-  try {
-    Invoke-RestMethod -Uri 'http://127.0.0.1:${PORT:-3080}/api/open-url' -Method Post -ContentType 'application/json' -Body (@{ url = \$t } | ConvertTo-Json) -TimeoutSec 2 | Out-Null
-  } catch {
-    Start-Process \$t
-  }
-" >/dev/null 2>&1 &
+if command -v curl >/dev/null 2>&1; then
+  (
+    curl -sS -m 2 -X POST "http://127.0.0.1:${PORT:-3080}/api/open-url" \
+      -H "Content-Type: application/json" \
+      -d "{\"url\":\"$TARGET\"}" >/dev/null 2>&1 || {
+      if [ -x /usr/bin/xdg-open ]; then
+        /usr/bin/xdg-open "$TARGET" >/dev/null 2>&1
+      elif command -v powershell.exe >/dev/null 2>&1; then
+        powershell.exe -NoProfile -NonInteractive -Command "Start-Process '$TARGET'" >/dev/null 2>&1
+      fi
+    }
+  ) &
+elif command -v powershell.exe >/dev/null 2>&1; then
+  powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
+    \$t = '$TARGET';
+    try {
+      Invoke-RestMethod -Uri 'http://127.0.0.1:${PORT:-3080}/api/open-url' -Method Post -ContentType 'application/json' -Body (@{ url = \$t } | ConvertTo-Json) -TimeoutSec 2 | Out-Null
+    } catch {
+      Start-Process \$t
+    }
+  " >/dev/null 2>&1 &
+elif [ -x /usr/bin/xdg-open ]; then
+  /usr/bin/xdg-open "$TARGET" >/dev/null 2>&1 &
+fi
 exit 0

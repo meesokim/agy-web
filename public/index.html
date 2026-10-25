@@ -46,6 +46,15 @@
         <button class="btn btn-chip" id="btnOpenNaverMailReader" title="열려 있는 네이버 메일 페이지에서 메일 목록 및 본문 읽어오기">
           📧 네이버 메일 읽기
         </button>
+        <button class="btn btn-chip" id="btnOpenNaverCafeSearch" title="내가 가입한 네이버 카페의 게시글 검색 및 조회">
+          ☕ 가입 카페 검색
+        </button>
+        <button class="btn btn-chip" id="btnOpenInputHistory" title="웹 콘솔에서 입력한 명령어 및 프롬프트 히스토리 로그 확인">
+          📜 입력 히스토리
+        </button>
+        <button class="btn btn-chip" id="btnOpenImageGallery" title="로컬/웹 이미지 직접 보기 및 갤러리">
+          🖼️ 이미지 뷰어
+        </button>
         <button class="btn btn-chip" id="btnOpenTabsInspector" title="현재 브라우저의 북마크 및 열려 있는 탭 확인">
           🌐 열린 탭 / 브라우저 북마크
         </button>
@@ -58,9 +67,9 @@
         <span class="status-indicator" id="connStatusDot"></span>
         <span class="status-text" id="connStatusText">연결 준비 중...</span>
         <span class="meta-divider">|</span>
-        <span class="meta-item" id="sessionMetaShell">pwsh / powershell</span>
+        <span class="meta-item" id="sessionMetaShell">bash</span>
         <span class="meta-divider">|</span>
-        <span class="meta-item" id="sessionMetaCwd" title="현재 세션 시작 작업 디렉토리">C:\Users\meesokim</span>
+        <span class="meta-item" id="sessionMetaCwd" title="현재 세션 시작 작업 디렉토리">~</span>
         <span class="meta-divider">|</span>
         <span class="meta-item" id="sessionMetaSize">120×32</span>
       </div>
@@ -90,7 +99,7 @@
       <div class="empty-state" id="emptyState" hidden>
         <div class="empty-card">
           <h2>열려 있는 콘솔 세션이 없습니다</h2>
-          <p>새 콘솔 세션을 생성하면 Windows ConPTY 파이프라인을 통해 PowerShell 및 <code>agy</code> CLI가 즉시 실행됩니다.</p>
+          <p>새 콘솔 세션을 생성하면 PTY 파이프라인을 통해 쉘 및 <code>agy</code> CLI가 즉시 실행됩니다.</p>
           <button class="btn btn-primary btn-lg" id="btnEmptyCreate">＋ 새 AGY 콘솔 시작하기</button>
         </div>
       </div>
@@ -111,12 +120,12 @@
         </div>
         <div class="form-group">
           <label for="inputSessionCwd">작업 디렉토리 (Working Directory)</label>
-          <input type="text" id="inputSessionCwd" placeholder="C:\Users\meesokim" required autocomplete="off" />
-          <small class="form-hint">PowerShell 및 <code>agy</code>가 시작될 로컬 폴더 경로를 입력하세요.</small>
+          <input type="text" id="inputSessionCwd" placeholder="/home/msx" required autocomplete="off" />
+          <small class="form-hint">쉘 및 <code>agy</code>가 시작될 로컬 폴더 경로를 입력하세요.</small>
         </div>
         <div class="form-group form-checkbox">
           <input type="checkbox" id="inputAutoRunAgy" checked />
-          <label for="inputAutoRunAgy">PowerShell 시작 직후 <code>agy</code> 자동 실행</label>
+          <label for="inputAutoRunAgy">쉘 시작 직후 <code>agy</code> 자동 실행</label>
         </div>
         <div class="form-error" id="modalError" hidden></div>
         <div class="modal-actions">
@@ -137,11 +146,14 @@
     <div class="hub-tabs">
       <button class="hub-tab active" data-hub-tab="internal">⭐ 내부 북마크</button>
       <button class="hub-tab" data-hub-tab="naver-mail">📧 네이버 메일</button>
+      <button class="hub-tab" data-hub-tab="naver-cafe">☕ 가입 카페 검색</button>
+      <button class="hub-tab" data-hub-tab="input-history">📜 입력 히스토리</button>
+      <button class="hub-tab" data-hub-tab="images">🖼️ 이미지</button>
       <button class="hub-tab" data-hub-tab="browser-bm">📚 브라우저 북마크</button>
       <button class="hub-tab" data-hub-tab="open-tabs">🌐 열린 탭/창</button>
     </div>
 
-    <!-- Tab: Naver Mail Reader -->
+    <!-- Tab: NaverMail Reader -->
     <div class="hub-panel" id="hubPanelNaverMail" hidden>
       <div class="hub-panel-toolbar">
         <button class="btn btn-primary" id="btnRefreshNaverMail">🔄 메일 읽어오기</button>
@@ -150,6 +162,65 @@
         </button>
       </div>
       <div class="hub-list" id="naverMailList"></div>
+    </div>
+
+    <!-- Tab: Joined Naver Cafe Search -->
+    <div class="hub-panel" id="hubPanelNaverCafe" hidden>
+      <form class="bm-add-form" id="cafeSearchForm">
+        <div class="bm-form-row">
+          <select id="cafeSelectFilter" style="flex:1;padding:6px 8px;border-radius:6px;border:1px solid #30363d;background:#0d1117;color:#e6edf3;font-size:12px;">
+            <option value="">전체 가입 카페</option>
+          </select>
+          <button type="button" class="btn btn-subtle" id="btnSyncJoinedCafes" title="열려 있는 브라우저/확장 프로그램에서 가입 카페 목록 동기화">
+            🔄 카페목록
+          </button>
+        </div>
+        <div class="bm-form-row">
+          <input type="text" id="cafeSearchInput" placeholder="가입한 카페 글 검색어 입력..." required autocomplete="off" />
+          <button type="submit" class="btn btn-primary">🔍 검색</button>
+        </div>
+        <div class="bm-form-row" style="justify-content:space-between;">
+          <button type="button" class="btn btn-chip" id="btnToggleAddCafeForm" title="가입한 카페 URL 수동 등록">
+            ＋ 가입 카페 직접 등록
+          </button>
+          <button type="button" class="btn btn-chip" id="btnSendCafeResultsToAgy" title="검색된 카페 게시글 목록을 agy 콘솔 프롬프트에 전달">
+            🤖 검색결과 콘솔 전달
+          </button>
+        </div>
+      </form>
+      <form class="bm-add-form" id="cafeAddForm" hidden style="border-top:none;padding-top:0;">
+        <input type="text" id="cafeAddUrlInput" placeholder="카페 주소 또는 ID (예: https://cafe.naver.com/joonggonara)" required autocomplete="off" />
+        <div class="bm-form-row">
+          <input type="text" id="cafeAddNameInput" placeholder="카페 이름 (선택)" autocomplete="off" />
+          <button type="submit" class="btn btn-primary">등록</button>
+        </div>
+      </form>
+      <div class="hub-list" id="naverCafeList"></div>
+    </div>
+
+    <!-- Tab: Web Input History Log -->
+    <div class="hub-panel" id="hubPanelInputHistory" hidden>
+      <div class="hub-panel-toolbar" style="flex-wrap:wrap;gap:6px;">
+        <input type="text" id="inputHistorySearch" placeholder="웹 입력 히스토리 검색..." autocomplete="off" style="flex:1;min-width:140px;" />
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:#8b949e;cursor:pointer;">
+          <input type="checkbox" id="inputHistorySessionFilter" /> 현재 세션만
+        </label>
+        <button class="btn btn-subtle" id="btnRefreshInputHistory" title="새로고침">🔄</button>
+        <button class="btn btn-subtle" id="btnDownloadInputHistory" title="히스토리 로그 파일(.txt) 다운로드">📥</button>
+        <button class="btn btn-subtle" id="btnClearInputHistory" title="전체 입력 히스토리 비우기">🗑️</button>
+      </div>
+      <div class="hub-list" id="inputHistoryList"></div>
+    </div>
+
+    <!-- Tab: Direct Image Viewer & Gallery -->
+    <div class="hub-panel" id="hubPanelImages" hidden>
+      <form class="bm-add-form" id="imageOpenForm">
+        <div class="bm-form-row">
+          <input type="text" id="imagePathInput" placeholder="로컬 이미지 경로(/home/msx/.../a.png) 또는 URL..." required autocomplete="off" />
+          <button type="submit" class="btn btn-primary">🖼️ 보기</button>
+        </div>
+      </form>
+      <div class="hub-list" id="imageGalleryList"></div>
     </div>
 
     <!-- Tab 1: Internal Bookmarks Manager -->
@@ -191,6 +262,7 @@
   <script src="/vendor/addon-fit/lib/addon-fit.js"></script>
   <script src="/vendor/addon-web-links/lib/addon-web-links.js"></script>
   <script src="/vendor/addon-unicode11/lib/addon-unicode11.js"></script>
+  <script src="/vendor/addon-image/lib/addon-image.js" onerror="this.src='https://cdn.jsdelivr.net/npm/@xterm/addon-image@0.8.0/lib/addon-image.min.js'"></script>
   <script src="/app.js"></script>
 </body>
 </html>
