@@ -167,16 +167,30 @@ function compactTerminalBuffer(input) {
     }
   }
 
-  // 3. Collapse stacked / consecutive horizontal divider lines
-  const borderPattern = '(?:(?:\\x1b\\[[0-9;?]*[a-zA-Z])*[─━═-]{6,}(?:\\x1b\\[[0-9;?]*[a-zA-Z])*\\s*[\\r\\n]+)';
-  const stackedBordersRe = new RegExp('(' + borderPattern + ')(?:\\s*[\\r\\n]*' + borderPattern + ')+', 'g');
-  text = text.replace(stackedBordersRe, '$1');
+  // 3. Collapse stacked / consecutive horizontal divider lines (linear pass, O(N), zero regex backtracking)
+  const lines = text.split('\n');
+  const result = [];
+  let prevIsBorder = false;
 
-  // 4. Collapse excessive blank lines surrounding horizontal divider lines
-  text = text.replace(/(?:[\r\n]{3,})((?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{6,})/g, '\r\n\r\n$1');
-  text = text.replace(/((?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{6,})(?:[\r\n]{3,})/g, '$1\r\n\r\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const plain = line.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').trim();
+    const isBorder = /^[─━═-]{6,}$/.test(plain);
 
-  return text;
+    if (isBorder) {
+      if (!prevIsBorder) {
+        result.push(line);
+        prevIsBorder = true;
+      }
+    } else {
+      if (plain.length > 0) {
+        prevIsBorder = false;
+      }
+      result.push(line);
+    }
+  }
+
+  return result.join('\n');
 }
 
 function writeInlineImageToSession(session, { title, resolvedPath, url, b64, byteSize }) {
@@ -886,10 +900,25 @@ function createSession({
 
   const compactAgyProgress = (raw) => {
     if (!raw || typeof raw !== 'string') return '';
-    // Collapse consecutive horizontal divider lines that arrive together
-    const borderPattern = '(?:(?:\\x1b\\[[0-9;?]*[a-zA-Z])*[─━═-]{6,}(?:\\x1b\\[[0-9;?]*[a-zA-Z])*\\s*[\\r\\n]+)';
-    const stackedBordersRe = new RegExp('(' + borderPattern + ')(?:\\s*[\\r\\n]*' + borderPattern + ')+', 'g');
-    return raw.replace(stackedBordersRe, '$1');
+    if (!raw.includes('─') && !raw.includes('━') && !raw.includes('═')) return raw;
+    const lines = raw.split('\n');
+    const result = [];
+    let prevIsBorder = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const plain = line.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').trim();
+      const isBorder = /^[─━═-]{6,}$/.test(plain);
+      if (isBorder) {
+        if (!prevIsBorder) {
+          result.push(line);
+          prevIsBorder = true;
+        }
+      } else {
+        if (plain.length > 0) prevIsBorder = false;
+        result.push(line);
+      }
+    }
+    return result.join('\n');
   };
 
   const appendScrollback = (data) => {
@@ -1337,6 +1366,23 @@ app.get('/api/naver-mail', async (req, res) => {
     res.json(state);
   } catch (err) {
     res.status(500).json({ error: err.message || '네이버 메일 조회 실패' });
+  }
+});
+
+// REST API: Receive Gmail data from Extension or Bookmarklet
+app.post('/api/gmail/sync', (req, res) => {
+  const state = browserBridge.updateGmailState(req.body || {}, 'extension/bookmarklet');
+  res.json({ ok: true, count: (state.mails || []).length });
+});
+
+// REST API: Fetch Gmail list & open mail body (via CDP or synced state)
+app.get('/api/gmail', async (req, res) => {
+  try {
+    const readUrl = req.query.readUrl || null;
+    const state = await browserBridge.fetchGmailFromBrowser({ readUrl });
+    res.json(state);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Gmail 조회 실패' });
   }
 });
 

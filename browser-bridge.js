@@ -463,6 +463,15 @@ let cachedNaverMailState = {
   openMail: null,
 };
 
+let cachedGmailState = {
+  source: null,
+  pageUrl: null,
+  pageTitle: null,
+  fetchedAt: null,
+  mails: [],
+  openMail: null,
+};
+
 function updateExtensionTabs(tabs) {
   if (Array.isArray(tabs)) {
     extensionSyncedTabs = tabs;
@@ -480,6 +489,19 @@ function updateNaverMailState(payload, source = 'sync') {
     openMail: payload.openMail || cachedNaverMailState.openMail,
   };
   return cachedNaverMailState;
+}
+
+function updateGmailState(payload, source = 'sync') {
+  if (!payload || typeof payload !== 'object') return cachedGmailState;
+  cachedGmailState = {
+    source,
+    pageUrl: payload.pageUrl || 'https://mail.google.com',
+    pageTitle: payload.pageTitle || 'Gmail',
+    fetchedAt: payload.fetchedAt || new Date().toISOString(),
+    mails: Array.isArray(payload.mails) ? payload.mails : cachedGmailState.mails,
+    openMail: payload.openMail || cachedGmailState.openMail,
+  };
+  return cachedGmailState;
 }
 
 /**
@@ -673,6 +695,136 @@ async function fetchNaverMailFromBrowser({ readUrl = null } = {}) {
   }
 
   return cachedNaverMailState;
+}
+
+const GMAIL_MAIL_EXTRACTOR_EXPR = `
+(async () => {
+  const mails = [];
+  const seen = new Set();
+
+  try {
+    const resp = await fetch('https://mail.google.com/mail/feed/atom', { credentials: 'include' });
+    if (resp.ok) {
+      const text = await resp.text();
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(text, 'text/xml');
+      const entries = xmlDoc.querySelectorAll('entry');
+      entries.forEach((entry, idx) => {
+        const title = entry.querySelector('title')?.textContent?.trim() || '(제목 없음)';
+        const summary = entry.querySelector('summary')?.textContent?.trim() || '';
+        const authorName = entry.querySelector('author name')?.textContent?.trim() || '';
+        const authorEmail = entry.querySelector('author email')?.textContent?.trim() || '';
+        const sender = authorName ? (authorName + ' <' + authorEmail + '>') : (authorEmail || '알 수 없음');
+        const issued = entry.querySelector('issued, modified')?.textContent?.trim() || '';
+        const link = entry.querySelector('link')?.getAttribute('href') || 'https://mail.google.com';
+        const id = entry.querySelector('id')?.textContent?.trim() || ('atom-' + idx);
+        const key = id || (title + ':' + sender);
+        if (!seen.has(key)) {
+          seen.add(key);
+          mails.push({
+            mailId: id,
+            subject: title,
+            sender,
+            date: issued ? new Date(issued).toLocaleString('ko-KR') : '',
+            snippet: summary,
+            unread: true,
+            url: link
+          });
+        }
+      });
+    }
+  } catch (_) {}
+
+  const rows = document.querySelectorAll('tr.zA, div[role="row"].zA, tr[role="row"]');
+  rows.forEach((row, idx) => {
+    const subjectEl = row.querySelector('.bog, .y6 span, [data-thread-id], span[role="gridcell"]');
+    const snippetEl = row.querySelector('.y2');
+    const senderEl = row.querySelector('.yW span[email], .bA4 span, .yP, .zF, [email]') || row.querySelector('.yX');
+    const dateEl = row.querySelector('.xW span, .xY span, td.xW, [title*="202"], [title*="오전"], [title*="오후"]');
+    const linkEl = row.querySelector('a[href*="#inbox/"], a[href*="#all/"], a[href*="#search/"]') || row.querySelector('a');
+
+    let subject = subjectEl ? subjectEl.innerText.replace(/\\s+/g, ' ').trim() : '';
+    if (!subject && linkEl) {
+      subject = linkEl.innerText.replace(/\\s+/g, ' ').trim();
+    }
+    if (!subject) return;
+
+    let snippet = snippetEl ? snippetEl.innerText.replace(/\\s+/g, ' ').trim() : '';
+    let sender = senderEl ? (senderEl.getAttribute('email') || senderEl.innerText.replace(/\\s+/g, ' ').trim()) : '알 수 없음';
+    let date = dateEl ? (dateEl.getAttribute('title') || dateEl.innerText.replace(/\\s+/g, ' ').trim()) : '';
+
+    const isUnread = row.classList.contains('zE') || Boolean(row.querySelector('.zE, font[weight="bold"], strong'));
+    const href = linkEl ? linkEl.href : window.location.href;
+    const id = row.getAttribute('id') || row.getAttribute('data-legacy-thread-id') || ('row-' + idx);
+
+    const key = id + ':' + subject;
+    if (!seen.has(key)) {
+      seen.add(key);
+      mails.push({
+        mailId: id,
+        subject,
+        sender,
+        date,
+        snippet,
+        unread: isUnread,
+        url: href
+      });
+    }
+  });
+
+  let openMail = null;
+  const mailBodyEl = document.querySelector('.a3s.aiL, div[role="listitem"] .a3s, .ii.gt');
+  if (mailBodyEl) {
+    const titleEl = document.querySelector('h2.hP, [data-thread-perm-id] h2, h2[data-legacy-thread-id]') || document.querySelector('h2');
+    const senderEl = document.querySelector('span.gD, .gE .gD, [email]');
+    const dateEl = document.querySelector('span.g3, .gH .g3, span[role="gridcell"]');
+
+    const subject = titleEl ? titleEl.innerText.replace(/\\s+/g, ' ').trim() : document.title;
+    const sender = senderEl ? (senderEl.getAttribute('email') ? (senderEl.innerText.trim() + ' <' + senderEl.getAttribute('email') + '>') : senderEl.innerText.trim()) : '';
+    const date = dateEl ? (dateEl.getAttribute('title') || dateEl.innerText.trim()) : '';
+    const body = mailBodyEl.innerText.trim().slice(0, 15000);
+
+    openMail = {
+      subject,
+      sender,
+      date,
+      body,
+      url: window.location.href
+    };
+  }
+
+  return {
+    pageUrl: window.location.href,
+    pageTitle: document.title,
+    fetchedAt: new Date().toISOString(),
+    mails,
+    openMail
+  };
+})()
+`;
+
+async function fetchGmailFromBrowser({ readUrl = null } = {}) {
+  const cdpTabs = await queryCdpTabs();
+  const gmailTab = cdpTabs.find(
+    (t) => t.url && (t.url.includes('mail.google.com') || t.url.includes('google.com/mail')) && t.webSocketDebuggerUrl
+  );
+
+  if (gmailTab) {
+    try {
+      const evaluated = await evaluateInCdpTab(
+        gmailTab.webSocketDebuggerUrl,
+        GMAIL_MAIL_EXTRACTOR_EXPR,
+        readUrl
+      );
+      if (evaluated) {
+        return updateGmailState(evaluated, 'cdp-live');
+      }
+    } catch (err) {
+      console.warn('CDP Gmail evaluation error:', err.message);
+    }
+  }
+
+  return cachedGmailState;
 }
 
 async function inspectOpenBrowserTabs() {
@@ -1452,6 +1604,8 @@ module.exports = {
   updateExtensionTabs,
   updateNaverMailState,
   fetchNaverMailFromBrowser,
+  updateGmailState,
+  fetchGmailFromBrowser,
   loadSavedJoinedCafes,
   addJoinedCafe,
   deleteJoinedCafe,

@@ -63,6 +63,9 @@
         <button class="btn btn-chip" id="btnOpenNaverMailReader" title="열려 있는 네이버 메일 페이지에서 메일 목록 및 본문 읽어오기">
           📧 네이버 메일
         </button>
+        <button class="btn btn-chip" id="btnOpenGmailReader" title="열려 있는 Gmail 페이지에서 메일 목록 및 본문 읽어오기">
+          📧 지메일
+        </button>
         <button class="btn btn-chip" id="btnOpenNaverCafeSearch" title="내가 가입한 네이버 카페의 게시글 검색 및 조회">
           ☕ 가입 카페
         </button>
@@ -466,6 +469,7 @@
     <div class="hub-tabs">
       <button class="hub-tab active" data-hub-tab="internal">⭐ 내부 북마크</button>
       <button class="hub-tab" data-hub-tab="naver-mail">📧 네이버 메일</button>
+      <button class="hub-tab" data-hub-tab="gmail">📧 지메일</button>
       <button class="hub-tab" data-hub-tab="naver-cafe">☕ 가입 카페 검색</button>
       <button class="hub-tab" data-hub-tab="input-history">📜 입력 히스토리</button>
       <button class="hub-tab" data-hub-tab="images">🖼️ 이미지</button>
@@ -482,6 +486,17 @@
         </button>
       </div>
       <div class="hub-list" id="naverMailList"></div>
+    </div>
+
+    <!-- Tab: Gmail Reader -->
+    <div class="hub-panel" id="hubPanelGmail" hidden>
+      <div class="hub-panel-toolbar">
+        <button class="btn btn-primary" id="btnRefreshGmail">🔄 지메일 읽어오기</button>
+        <button class="btn btn-subtle" id="btnSendAllGmailToAgy" title="현재 불러온 지메일 목록을 agy 콘솔에 전달하여 요약/분석 요청">
+          🤖 목록 콘솔로 전달
+        </button>
+      </div>
+      <div class="hub-list" id="gmailList"></div>
     </div>
 
     <!-- Tab: Joined Naver Cafe Search -->

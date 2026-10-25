@@ -478,16 +478,30 @@
         }
       }
 
-      // 3. Collapse stacked / consecutive horizontal divider lines
-      const borderPattern = '(?:(?:\\x1b\\[[0-9;?]*[a-zA-Z])*[─━═-]{6,}(?:\\x1b\\[[0-9;?]*[a-zA-Z])*\\s*[\\r\\n]+)';
-      const stackedBordersRe = new RegExp('(' + borderPattern + ')(?:\\s*[\\r\\n]*' + borderPattern + ')+', 'g');
-      text = text.replace(stackedBordersRe, '$1');
+      // 3. Collapse stacked / consecutive horizontal divider lines (linear pass, O(N), zero backtracking)
+      const lines = text.split('\n');
+      const result = [];
+      let prevIsBorder = false;
 
-      // 4. Collapse excessive blank lines surrounding horizontal divider lines
-      text = text.replace(/(?:[\r\n]{3,})((?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{6,})/g, '\r\n\r\n$1');
-      text = text.replace(/((?:\x1b\[[0-9;?]*[a-zA-Z])*[─━═-]{6,})(?:[\r\n]{3,})/g, '$1\r\n\r\n');
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const plain = line.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').trim();
+        const isBorder = /^[─━═-]{6,}$/.test(plain);
 
-      return text;
+        if (isBorder) {
+          if (!prevIsBorder) {
+            result.push(line);
+            prevIsBorder = true;
+          }
+        } else {
+          if (plain.length > 0) {
+            prevIsBorder = false;
+          }
+          result.push(line);
+        }
+      }
+
+      return result.join('\n');
     }
 
     ws.onmessage = (event) => {
@@ -979,6 +993,7 @@
   const hubTabs = Array.from(document.querySelectorAll('.hub-tab'));
   const hubPanelInternal = document.getElementById('hubPanelInternal');
   const hubPanelNaverMail = document.getElementById('hubPanelNaverMail');
+  const hubPanelGmail = document.getElementById('hubPanelGmail');
   const hubPanelNaverCafe = document.getElementById('hubPanelNaverCafe');
   const hubPanelInputHistory = document.getElementById('hubPanelInputHistory');
   const hubPanelImages = document.getElementById('hubPanelImages');
@@ -1002,6 +1017,7 @@
   let internalBookmarks = [];
   let cachedBrowserBookmarks = [];
   let latestNaverMailData = null;
+  let latestGmailData = null;
   let latestNaverCafeData = null;
   let cachedInputHistory = [];
   let cachedImages = [];
@@ -1201,6 +1217,9 @@
 
   const BOOKMARKLET_CODE =
     "javascript:(()=>{const s=[];document.querySelectorAll('li.mail_item,div.mail_item,ul.mail_list>li,[class*=\"mail_item\"],tr[mailsn]').forEach((e,i)=>{const t=e.querySelector('.mail_title_link,.mail_title,strong.mail_title,a[href*=\"/read/\"],.subject')||e.querySelector('a'),f=e.querySelector('.mail_sender,.button_sender,[class*=\"sender\"],.name'),d=e.querySelector('.mail_date,[class*=\"date\"],.time'),l=e.querySelector('a[href*=\"/read/\"],a.mail_title_link');let sub=(t?t.innerText:'').replace(/\\s+/g,' ').replace(/^메일 제목\\s*/,'').trim();if(!sub)return;s.push({mailSn:String(i),subject:sub,sender:(f?f.innerText:'').replace(/\\s+/g,' ').replace(/^보낸 사람\\s*/,'').trim(),date:(d?d.innerText:'').replace(/\\s+/g,' ').trim(),unread:e.classList.contains('unreads')||e.classList.contains('unread'),url:l?l.href:location.href});});let om=null;const vb=document.querySelector('.mail_view_contents,.mail_view_body,#readFrame,[class*=\"mail_view_contents\"]');if(vb){const vt=document.querySelector('.mail_view_title,h4.view_title,[class*=\"mail_view_title\"]');om={subject:vt?vt.innerText.trim():document.title,body:vb.innerText.trim().slice(0,15000),url:location.href};}fetch('http://127.0.0.1:3080/api/naver-mail/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pageUrl:location.href,pageTitle:document.title,mails:s,openMail:om})}).then(()=>alert('AGY 웹 콘솔로 네이버 메일 '+s.length+'건을 전송했습니다!')).catch(e=>alert('전송 실패: '+e));})();";
+
+  const GMAIL_BOOKMARKLET_CODE =
+    "javascript:(()=>{const s=[];document.querySelectorAll('tr.zA,div[role=\"row\"].zA,tr[role=\"row\"]').forEach((e,i)=>{const t=e.querySelector('.bog,.y6 span,[data-thread-id],span[role=\"gridcell\"]')||e.querySelector('a'),f=e.querySelector('.yW span[email],.bA4 span,.yP,.zF,[email]')||e.querySelector('.yX'),d=e.querySelector('.xW span,.xY span,td.xW'),sn=e.querySelector('.y2'),l=e.querySelector('a[href*=\"#inbox/\"],a[href*=\"#all/\"],a[href*=\"#search/\"]')||e.querySelector('a');let sub=(t?t.innerText:'').replace(/\\s+/g,' ').trim();if(!sub&&l)sub=l.innerText.trim();if(!sub)return;s.push({mailId:String(i),subject:sub,sender:(f?(f.getAttribute('email')||f.innerText):'').replace(/\\s+/g,' ').trim(),date:(d?d.innerText:'').replace(/\\s+/g,' ').trim(),snippet:(sn?sn.innerText:'').replace(/\\s+/g,' ').trim(),unread:e.classList.contains('zE'),url:l?l.href:location.href});});let om=null;const vb=document.querySelector('.a3s.aiL,div[role=\"listitem\"] .a3s,.ii.gt');if(vb){const vt=document.querySelector('h2.hP,[data-thread-perm-id] h2,h2[data-legacy-thread-id]')||document.querySelector('h2');const vs=document.querySelector('span.gD,.gE .gD,[email]');const vd=document.querySelector('span.g3,.gH .g3');om={subject:vt?vt.innerText.trim():document.title,sender:vs?(vs.getAttribute('email')?vs.innerText+' <'+vs.getAttribute('email')+'>':vs.innerText):'',date:vd?vd.innerText.trim():'',body:vb.innerText.trim().slice(0,15000),url:location.href};}fetch('http://127.0.0.1:3080/api/gmail/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pageUrl:location.href,pageTitle:document.title,mails:s,openMail:om})}).then(()=>alert('AGY 웹 콘솔로 지메일 '+s.length+'건을 전송했습니다!')).catch(e=>alert('전송 실패: '+e));})();";
 
   function insertTextToActiveConsole(text) {
     if (!activeSessionId) return;
@@ -1476,6 +1495,170 @@
       row.appendChild(info);
       row.appendChild(actions);
       naverMailList.appendChild(row);
+    }
+  }
+
+  async function fetchGmail(readUrl = null) {
+    const gmailList = document.getElementById('gmailList');
+    if (!gmailList) return;
+    gmailList.innerHTML = '<div class="hub-note">지메일(Gmail) 데이터를 불러오는 중...</div>';
+
+    try {
+      const qs = readUrl ? `?readUrl=${encodeURIComponent(readUrl)}` : '';
+      const res = await fetch(`/api/gmail${qs}`);
+      const data = await res.json();
+      latestGmailData = data;
+      renderGmailPanel(data);
+    } catch (err) {
+      gmailList.innerHTML = `<div class="hub-note">Gmail 조회 오류: ${err.message}</div>`;
+    }
+  }
+
+  function renderGmailPanel(data) {
+    const gmailList = document.getElementById('gmailList');
+    if (!gmailList) return;
+    gmailList.innerHTML = '';
+
+    const mails = Array.isArray(data?.mails) ? data.mails : [];
+    const openMail = data?.openMail || null;
+
+    if (mails.length === 0 && !openMail) {
+      const guide = document.createElement('div');
+      guide.className = 'hub-note';
+      guide.innerHTML = `
+        <div style="font-weight:700;color:#fff;margin-bottom:6px;">📧 열려 있는 Gmail 페이지 연동 방법 (택1)</div>
+        <div style="margin-bottom:8px;">
+          <b>방법 1 (현재 일반 브라우저 그대로 사용 — 북마크릿):</b><br/>
+          아래 파란 버튼을 마우스로 끌어 브라우저 <b>북마크 바(즐겨찾기 바)</b>에 놓은 뒤, 열려 있는 Gmail(mail.google.com) 탭에서 클릭하면 즉시 메일 목록과 본문이 이곳으로 전송됩니다.<br/>
+          <a href="${GMAIL_BOOKMARKLET_CODE.replace(/"/g, '&quot;')}" class="btn btn-primary" style="margin-top:6px;text-decoration:none;display:inline-block;" onclick="event.preventDefault();alert('이 버튼을 마우스로 끌어서 브라우저 상단 북마크 바에 놓으세요!');">📥 지메일 → AGY 전송</a>
+        </div>
+        <div style="margin-bottom:8px;">
+          <b>방법 2 (Chrome 확장 프로그램 100% 자동 동기화):</b><br/>
+          브라우저 주소창에 <code>chrome://extensions</code> 입력 → 우측 상단 <b>개발자 모드</b> 켜기 → <b>압축해제된 확장 프로그램을 로드합니다</b> 클릭 → <code>/home/msx/agy-web/extension</code> 폴더 선택 시 Gmail 탭을 열 때마다 자동으로 읽어옵니다.
+        </div>
+        <div>
+          <b>방법 3 (터미널 CLI 도구 사용):</b><br/>
+          터미널에서 <code>agy-web-gmail</code> 을 실행하면 동기화된 지메일 목록 및 본문을 즉시 조회할 수 있습니다.
+        </div>
+      `;
+      gmailList.appendChild(guide);
+      return;
+    }
+
+    const statusNote = document.createElement('div');
+    statusNote.className = 'hub-note';
+    statusNote.textContent = `✅ Gmail 연동됨 (${data.source || 'sync'}) · 메일 ${mails.length}건 · 업데이트: ${
+      data.fetchedAt ? new Date(data.fetchedAt).toLocaleTimeString('ko-KR') : '-'
+    }`;
+    gmailList.appendChild(statusNote);
+
+    if (openMail && openMail.body) {
+      const bodyHeader = document.createElement('div');
+      bodyHeader.className = 'hub-section-title';
+      bodyHeader.textContent = `📖 현재 열려 있는 메일 본문`;
+      gmailList.appendChild(bodyHeader);
+
+      const bodyCard = document.createElement('div');
+      bodyCard.className = 'hub-item';
+      bodyCard.style.flexDirection = 'column';
+      bodyCard.style.alignItems = 'stretch';
+
+      const topRow = document.createElement('div');
+      topRow.style.display = 'flex';
+      topRow.style.justifyContent = 'space-between';
+      topRow.style.alignItems = 'center';
+      topRow.style.gap = '8px';
+
+      const titleEl = document.createElement('div');
+      titleEl.className = 'hub-item-title';
+      titleEl.textContent = openMail.subject || '(제목 없음)';
+
+      const sendBodyBtn = document.createElement('button');
+      sendBodyBtn.className = 'btn btn-primary';
+      sendBodyBtn.textContent = '🤖 본문 콘솔에 전달';
+      sendBodyBtn.addEventListener('click', () => {
+        const promptText = `[Gmail 본문] 제목: ${openMail.subject || ''} / 보낸사람: ${
+          openMail.sender || ''
+        } / 내용: ${openMail.body.replace(/\r?\n/g, ' ').slice(0, 2000)} `;
+        insertTextToActiveConsole(promptText);
+      });
+
+      topRow.appendChild(titleEl);
+      topRow.appendChild(sendBodyBtn);
+
+      const pre = document.createElement('pre');
+      pre.style.whiteSpace = 'pre-wrap';
+      pre.style.fontSize = '11.5px';
+      pre.style.color = '#c9d1d9';
+      pre.style.maxHeight = '180px';
+      pre.style.overflowY = 'auto';
+      pre.style.marginTop = '8px';
+      pre.style.padding = '8px';
+      pre.style.background = '#131824';
+      pre.style.borderRadius = '4px';
+      pre.textContent = openMail.body;
+
+      bodyCard.appendChild(topRow);
+      bodyCard.appendChild(pre);
+      gmailList.appendChild(bodyCard);
+    }
+
+    const listHeader = document.createElement('div');
+    listHeader.className = 'hub-section-title';
+    listHeader.textContent = `📬 Gmail 목록 (${mails.length}건)`;
+    gmailList.appendChild(listHeader);
+
+    for (const m of mails) {
+      const row = document.createElement('div');
+      row.className = 'hub-item';
+
+      const info = document.createElement('div');
+      info.className = 'hub-item-info';
+
+      const titleEl = document.createElement('div');
+      titleEl.className = 'hub-item-title';
+      titleEl.textContent = `${m.unread ? '🔵 [안읽음] ' : ''}${m.subject}`;
+
+      const subEl = document.createElement('div');
+      subEl.className = 'hub-item-sub';
+      const snippetPart = m.snippet ? ` · ${m.snippet.slice(0, 70)}...` : '';
+      subEl.textContent = `${m.sender || ''}${m.date ? ` · ${m.date}` : ''}${snippetPart}`;
+
+      info.appendChild(titleEl);
+      info.appendChild(subEl);
+
+      const actions = document.createElement('div');
+      actions.className = 'hub-item-actions';
+
+      if (m.url) {
+        const readBtn = document.createElement('button');
+        readBtn.className = 'btn btn-chip';
+        readBtn.textContent = '📖 본문';
+        readBtn.title = '이 메일 열기 / 본문 읽기';
+        readBtn.addEventListener('click', () => {
+          if (data.source === 'cdp-live') {
+            fetchGmail(m.url);
+          } else {
+            openTerminalLink(m.url, false);
+          }
+        });
+        actions.appendChild(readBtn);
+      }
+
+      const sendBtn = document.createElement('button');
+      sendBtn.className = 'btn btn-chip';
+      sendBtn.textContent = '🤖 콘솔전달';
+      sendBtn.title = '이 메일 정보를 agy 콘솔 프롬프트에 입력';
+      sendBtn.addEventListener('click', () => {
+        insertTextToActiveConsole(
+          `[Gmail] 보낸사람: ${m.sender || '-'} | 제목: ${m.subject} | 일시: ${m.date || '-'} | 요약: ${m.snippet || ''} `
+        );
+      });
+      actions.appendChild(sendBtn);
+
+      row.appendChild(info);
+      row.appendChild(actions);
+      gmailList.appendChild(row);
     }
   }
 
@@ -2353,6 +2536,7 @@
     }
     hubPanelInternal.hidden = tabName !== 'internal';
     if (hubPanelNaverMail) hubPanelNaverMail.hidden = tabName !== 'naver-mail';
+    if (hubPanelGmail) hubPanelGmail.hidden = tabName !== 'gmail';
     if (hubPanelNaverCafe) hubPanelNaverCafe.hidden = tabName !== 'naver-cafe';
     if (hubPanelInputHistory) hubPanelInputHistory.hidden = tabName !== 'input-history';
     if (hubPanelImages) hubPanelImages.hidden = tabName !== 'images';
@@ -2363,6 +2547,8 @@
       fetchInternalBookmarks();
     } else if (tabName === 'naver-mail') {
       fetchNaverMail();
+    } else if (tabName === 'gmail') {
+      fetchGmail();
     } else if (tabName === 'naver-cafe') {
       fetchNaverCafe();
       setTimeout(() => cafeSearchInput?.focus(), 50);
@@ -2393,6 +2579,10 @@
 
   document.getElementById('btnOpenNaverMailReader')?.addEventListener('click', () => {
     switchHubTab('naver-mail');
+  });
+
+  document.getElementById('btnOpenGmailReader')?.addEventListener('click', () => {
+    switchHubTab('gmail');
   });
 
   document.getElementById('btnOpenNaverCafeSearch')?.addEventListener('click', () => {
@@ -2434,6 +2624,10 @@
 
   document.getElementById('btnRefreshNaverMail')?.addEventListener('click', () => {
     fetchNaverMail();
+  });
+
+  document.getElementById('btnRefreshGmail')?.addEventListener('click', () => {
+    fetchGmail();
   });
 
   cafeSearchForm?.addEventListener('submit', (ev) => {
@@ -2542,6 +2736,26 @@
       .join(' / ');
     insertTextToActiveConsole(
       `다음은 내 네이버 메일함 최근 목록이야: ${summary} — 중요한 메일 요약해줘.`
+    );
+  });
+
+  document.getElementById('btnSendAllGmailToAgy')?.addEventListener('click', () => {
+    const mails = latestGmailData?.mails || [];
+    if (mails.length === 0) {
+      alert('먼저 지메일(Gmail) 목록을 불러와 주세요.');
+      return;
+    }
+    const summary = mails
+      .slice(0, 15)
+      .map(
+        (m, i) =>
+          `${i + 1}. ${m.unread ? '[안읽음]' : '[읽음]'} ${m.subject} (보낸사람: ${m.sender || '-'}, ${
+            m.date || ''
+          }${m.snippet ? `, 요약: ${m.snippet.slice(0, 50)}` : ''})`
+      )
+      .join(' / ');
+    insertTextToActiveConsole(
+      `다음은 내 지메일(Gmail) 받은편지함 최근 목록이야: ${summary} — 중요한 메일 요약해줘.`
     );
   });
 
@@ -3328,6 +3542,7 @@
     { id: 'mod-auto-approve', label: '⚡ 실시간 자동 승인', selector: '#btnToggleAutoApprove', enabled: true },
     { id: 'mod-bookmark-add', label: '＋ 북마크 추가', selector: '#btnQuickAddBookmark', enabled: true },
     { id: 'mod-naver-mail', label: '📧 네이버 메일', selector: '#btnOpenNaverMailReader', enabled: true },
+    { id: 'mod-gmail', label: '📧 지메일', selector: '#btnOpenGmailReader', enabled: true },
     { id: 'mod-naver-cafe', label: '☕ 가입 카페', selector: '#btnOpenNaverCafeSearch', enabled: true },
     { id: 'mod-input-history', label: '📜 입력 히스토리', selector: '#btnOpenInputHistory', enabled: true },
     { id: 'mod-image-viewer', label: '🖼️ 이미지 뷰어', selector: '#btnOpenImageGallery', enabled: true },
@@ -3351,6 +3566,12 @@
       if (!raw) return JSON.parse(JSON.stringify(defaults));
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return JSON.parse(JSON.stringify(defaults));
+      const existingIds = new Set(parsed.map((item) => item.id));
+      for (const def of defaults) {
+        if (!existingIds.has(def.id)) {
+          parsed.push(JSON.parse(JSON.stringify(def)));
+        }
+      }
       return parsed;
     } catch (_) {
       return JSON.parse(JSON.stringify(defaults));

@@ -1,6 +1,7 @@
 node_modules/
 .session-continuity.json
 input-history.json
+joined-cafes.json
 *.log
 .DS_Store
 Thumbs.db
