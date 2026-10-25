@@ -3180,33 +3180,14 @@
     }).catch(() => {});
   }
 
-  let autoApproveToastTimer = null;
   function showAutoApproveToast(matched, input) {
-    let toast = document.getElementById('autoApproveToast');
-    if (!toast) {
-      toast = document.createElement('div');
-      toast.id = 'autoApproveToast';
-      toast.className = 'auto-approve-toast';
-      document.body.appendChild(toast);
-    }
-    toast.innerHTML = `
-      <span style="font-size:16px;">⚡</span>
-      <div>
-        <div style="font-weight:700;color:#56d364;">터미널 확인 프롬프트 자동 승인 완료</div>
-        <div style="font-size:11px;color:#c9d1d9;font-family:monospace;margin-top:2px;">
-          ${escapeHtml(matched)} &rarr; <strong>'${input === 'Enter' ? '[Enter]' : 'y'}'</strong>
-        </div>
-      </div>
-    `;
-    toast.hidden = false;
-    clearTimeout(autoApproveToastTimer);
-    autoApproveToastTimer = setTimeout(() => {
-      toast.hidden = true;
-    }, 3500);
+    // 사용자 요청으로 자동 승인 팝업 제거
+    const existing = document.getElementById('autoApproveToast');
+    if (existing) existing.remove();
   }
 
   function handleAutoApprovedNotification(msg) {
-    showAutoApproveToast(msg.matched || '', msg.input || 'y');
+    // 사용자 요청으로 토스트 팝업(showAutoApproveToast) 미호출, 조용히 자동 승인 수행
     appendHermesToolCard({
       id: `auto-appr-${Date.now().toString(36)}`,
       action: 'AutoApprove',
