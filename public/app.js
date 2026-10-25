@@ -415,6 +415,9 @@
   function sendResize(sessionId, cols, rows) {
     const entry = clientSessions.get(sessionId);
     if (!entry || !entry.ws || entry.ws.readyState !== WebSocket.OPEN) return;
+    if (entry.lastCols === cols && entry.lastRows === rows) return;
+    entry.lastCols = cols;
+    entry.lastRows = rows;
     entry.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
   }
 
@@ -627,16 +630,28 @@
   /**
    * Fit the active terminal to its container and notify the server ConPTY.
    */
+  let fitDebounceTimer = null;
   function fitActiveTerminal() {
     if (!activeSessionId) return;
     const entry = clientSessions.get(activeSessionId);
-    if (!entry) return;
+    if (!entry || !entry.fitAddon) return;
     try {
       entry.fitAddon.fit();
       const { cols, rows } = entry.term;
-      sendResize(activeSessionId, cols, rows);
-      sessionMetaSize.textContent = `${cols}×${rows}`;
+      if (cols > 0 && rows > 0) {
+        sendResize(activeSessionId, cols, rows);
+        if (sessionMetaSize) {
+          sessionMetaSize.textContent = `${cols}×${rows}`;
+        }
+      }
     } catch (_) {}
+  }
+
+  function debouncedFitActiveTerminal(delay = 120) {
+    clearTimeout(fitDebounceTimer);
+    fitDebounceTimer = setTimeout(() => {
+      fitActiveTerminal();
+    }, delay);
   }
 
   /**
@@ -903,12 +918,12 @@
     }
   });
 
-  // Automatically resize ConPTY when the browser window or stage resizes
+  // Automatically resize ConPTY with debouncing when the browser window or stage resizes
   const resizeObserver = new ResizeObserver(() => {
-    fitActiveTerminal();
+    debouncedFitActiveTerminal(120);
   });
   resizeObserver.observe(terminalStage);
-  window.addEventListener('resize', fitActiveTerminal);
+  window.addEventListener('resize', () => debouncedFitActiveTerminal(120));
 
   // =========================================================================
   // Bookmarks, Naver Mail & Browser Tabs Hub
@@ -2622,8 +2637,8 @@
     }
 
     setTimeout(() => {
-      fitActiveTerminal();
-    }, 50);
+      debouncedFitActiveTerminal(60);
+    }, 60);
   }
 
   function handleHermesAgentStatus(data) {

@@ -564,53 +564,59 @@ function markContinuityActive() {
 function checkAndAutoApprovePrompt(session, plainChunk) {
   if (!session || session.exited || session.autoApprove === false) return;
   const now = Date.now();
-  if (now - (session.lastAutoApproveTime || 0) < 600) {
-    return;
-  }
-  // Prevent duplicate approval on the exact same waiting prompt buffer offset
-  if (session.scrollback.length <= (session.lastApprovedOffset || 0) + 5) {
+  if (now - (session.lastAutoApproveTime || 0) < 300) {
     return;
   }
 
-  // Extract recent tail from scrollback and current chunk (up to 1200 chars to cover multiline menu options)
+  // Extract recent tail from scrollback and current chunk (up to 1500 chars to cover multiline menu options)
   const tailBuffer = (
-    session.scrollback.slice(-1200).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '') +
+    session.scrollback.slice(-1500).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '') +
     ' ' +
     plainChunk
-  ).slice(-1200);
+  ).slice(-1500);
 
   let responseInput = null;
   let matchedStr = '';
   let inputLabel = '';
+  let promptSig = '';
 
-  // 1. AGY Interactive Permission Menu (e.g. "Run this command? > 1. Yes, run command", "Apply these changes? > 1. Yes")
-  const isAgyMenu = (
-    (tailBuffer.includes('Run this command?') ||
-     tailBuffer.includes('Requesting permission for:') ||
-     tailBuffer.includes('Apply these changes?') ||
-     tailBuffer.includes('Create this file?') ||
-     tailBuffer.includes('Allow tool execution?')) &&
-    (tailBuffer.includes('> 1. Yes') ||
-     tailBuffer.includes('1. Yes, run command') ||
-     tailBuffer.includes('1. Yes, apply') ||
-     tailBuffer.includes('> 1.')) &&
-    (tailBuffer.includes('esc to cancel') ||
-     tailBuffer.includes('Navigate') ||
-     tailBuffer.includes('No, cancel'))
-  );
+  // 1. AGY / Ink Interactive Selection Menu (e.g. "Run this command? > 1. Yes, run command", "Apply these changes? > 1. Yes")
+  const hasMenuFooter =
+    tailBuffer.includes('esc to cancel') ||
+    tailBuffer.includes('Navigate') ||
+    tailBuffer.includes('No, cancel') ||
+    tailBuffer.includes('ctrl+g') ||
+    tailBuffer.includes('tab Amend');
+  const hasOptionOne =
+    tailBuffer.includes('> 1.') ||
+    tailBuffer.includes('1. Yes') ||
+    tailBuffer.includes('1. 허용') ||
+    tailBuffer.includes('1. 실행');
+  const hasPermissionContext =
+    tailBuffer.includes('Run this command?') ||
+    tailBuffer.includes('Requesting permission') ||
+    tailBuffer.includes('Apply these changes?') ||
+    tailBuffer.includes('Allow ') ||
+    tailBuffer.includes('permission') ||
+    tailBuffer.includes('tool') ||
+    tailBuffer.includes('changes?') ||
+    tailBuffer.includes('file?') ||
+    tailBuffer.includes('승인') ||
+    tailBuffer.includes('실행');
 
-  if (isAgyMenu) {
-    const cmdMatch = tailBuffer.match(/Requesting permission for:\s*\n\s*([^\r\n]+)/);
-    const cmdName = cmdMatch ? cmdMatch[1].trim().slice(0, 50) : 'command';
+  if (hasMenuFooter && hasOptionOne && hasPermissionContext) {
+    const cmdMatch = tailBuffer.match(/(?:Requesting permission for|command|changes to):\s*\n\s*([^\r\n]+)/i);
+    const cmdName = cmdMatch ? cmdMatch[1].trim().slice(0, 50) : '1. Yes';
     responseInput = '\r'; // Submits the highlighted 1. Yes option
     matchedStr = `1. Yes (${cmdName})`;
     inputLabel = '1 (Enter)';
+    promptSig = `menu:${cmdName}:${tailBuffer.slice(-250).trim()}`;
   }
 
   // 2. Generic Numbered Choice Menu: "선택 [1]:", "Enter choice [1]:", "Choose [1-X]:"
   if (!responseInput) {
     const NUMBERED_CHOICE_REGEX =
-      /(?:선택\s*\(?\s*1\s*[-~]\s*\d+\s*\)?\s*:|enter\s+choice\s*(?:\(1-\d+\)|\[1\])?\s*:|select\s+an\s+option\s*\[?1\]?\s*:)/i;
+      /(?:선택\s*\(?\s*1\s*[-~]\s*\d+\s*\)?\s*:|enter\s+choice\s*(?:\(1-\d+\)|\[1\])?\s*:|select\s+an\s+option\s*\[?1\]?\s*:|choice\s*\[\s*1\s*\]\s*:)/i;
     const matchNum = tailBuffer.match(NUMBERED_CHOICE_REGEX);
     if (matchNum) {
       const afterPrompt = tailBuffer.slice(matchNum.index + matchNum[0].length).replace(/[\s\r\n:?]/g, '');
@@ -618,6 +624,7 @@ function checkAndAutoApprovePrompt(session, plainChunk) {
         responseInput = '1\r';
         matchedStr = matchNum[0].trim();
         inputLabel = '1';
+        promptSig = `num:${matchedStr}@${session.scrollback.length}`;
       }
     }
   }
@@ -636,6 +643,7 @@ function checkAndAutoApprovePrompt(session, plainChunk) {
         responseInput = 'y\r';
         matchedStr = matchY[0].trim();
         inputLabel = 'y';
+        promptSig = `y:${matchedStr}@${session.scrollback.length}`;
       }
     }
   }
@@ -651,19 +659,24 @@ function checkAndAutoApprovePrompt(session, plainChunk) {
         responseInput = '\r';
         matchedStr = matchEnter[0].trim();
         inputLabel = 'Enter';
+        promptSig = `enter:${matchedStr}@${session.scrollback.length}`;
       }
     }
   }
 
-  if (responseInput && matchedStr) {
+  if (responseInput && matchedStr && promptSig) {
+    // Prevent repeatedly approving the exact same waiting prompt signature
+    if (session.lastApprovedPromptSignature === promptSig && now - (session.lastAutoApproveTime || 0) < 5000) {
+      return;
+    }
+
     session.lastAutoApproveTime = now;
-    session.lastApprovedMatched = matchedStr;
+    session.lastApprovedPromptSignature = promptSig;
 
     clearTimeout(session.autoApproveTimer);
     session.autoApproveTimer = setTimeout(() => {
       if (session.exited) return;
 
-      session.lastApprovedOffset = session.scrollback.length;
       session.ptyProcess.write(responseInput);
 
       // Record in recent tool calls for visibility
@@ -691,7 +704,7 @@ function checkAndAutoApprovePrompt(session, plainChunk) {
           client.send(noticePayload);
         }
       }
-    }, 250); // 250ms debounce
+    }, 200); // 200ms debounce
   }
 }
 

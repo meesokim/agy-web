@@ -284,6 +284,7 @@ html, body {
   width: 100%;
   background: var(--bg-app);
   overflow: hidden;
+  contain: layout size;
 }
 
 .terminal-pane {
@@ -294,6 +295,9 @@ html, body {
   height: 100%;
   visibility: hidden;
   z-index: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  contain: layout size;
 }
 
 .terminal-pane.active {
@@ -304,10 +308,17 @@ html, body {
 .terminal-pane .xterm {
   height: 100%;
   width: 100%;
+  padding: 0;
+  overflow: hidden;
 }
 
 .terminal-pane .xterm .xterm-screen {
   overflow: hidden;
+}
+
+.terminal-pane .xterm-viewport {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
 }
 
 .terminal-pane .xterm .xterm-decoration-container {
@@ -1533,6 +1544,8 @@ html, body {
   background: #000;
   overflow: hidden;
   position: relative;
+  min-height: 0;
+  contain: layout size;
 }
 
 /* Rail Workspace Files */
