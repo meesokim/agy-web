@@ -1935,7 +1935,7 @@
   }
 
   // =========================================================================
-  // Web Input History Log
+  // Web Input History Log & Chronological Summary
   // =========================================================================
   const inputHistorySearch = document.getElementById('inputHistorySearch');
   const inputHistorySessionFilter = document.getElementById('inputHistorySessionFilter');
@@ -1943,6 +1943,23 @@
   const btnDownloadInputHistory = document.getElementById('btnDownloadInputHistory');
   const btnClearInputHistory = document.getElementById('btnClearInputHistory');
   const inputHistoryList = document.getElementById('inputHistoryList');
+  const btnOpenHistorySummary = document.getElementById('btnOpenHistorySummary');
+  const btnToggleHistorySort = document.getElementById('btnToggleHistorySort');
+  const btnHermesQuickHistorySummary = document.getElementById('btnHermesQuickHistorySummary');
+
+  // History Summary Modal
+  const historySummaryModal = document.getElementById('historySummaryModal');
+  const historySummaryBadge = document.getElementById('historySummaryBadge');
+  const summaryStatsBar = document.getElementById('summaryStatsBar');
+  const summaryTimelineList = document.getElementById('summaryTimelineList');
+  const summaryMarkdownContent = document.getElementById('summaryMarkdownContent');
+  const btnCloseHistorySummary = document.getElementById('btnCloseHistorySummary');
+  const btnSendHistoryToAgent = document.getElementById('btnSendHistoryToAgent');
+  const btnCopyHistorySummary = document.getElementById('btnCopyHistorySummary');
+  const btnDownloadHistorySummary = document.getElementById('btnDownloadHistorySummary');
+
+  let historySortOrder = 'desc'; // 'desc' = 최신순, 'asc' = 시간순 (과거순)
+  let cachedSummaryData = null;
 
   async function fetchInputHistory() {
     if (!inputHistoryList) return;
@@ -1974,15 +1991,26 @@
       return true;
     });
 
+    // Sort order: 'asc' = 과거순 (시간순), 'desc' = 최신순
+    filtered.sort((a, b) => {
+      const ta = new Date(a.createdAt || 0).getTime();
+      const tb = new Date(b.createdAt || 0).getTime();
+      return historySortOrder === 'asc' ? ta - tb : tb - ta;
+    });
+
+    if (btnToggleHistorySort) {
+      btnToggleHistorySort.textContent = historySortOrder === 'asc' ? '⬆️ 과거순 (시간순)' : '⬇️ 최신순';
+    }
+
     if (filtered.length === 0) {
       inputHistoryList.innerHTML =
-        '<div class="hub-note">기록된 웹 콘솔 입력 히스토리가 없습니다. 웹 터미널에서 명령어나 프롬프트를 입력하고 Enter를 누르면 자동으로 이곳에 기록됩니다.</div>';
+        '<div class="hub-note">기록된 웹 콘솔 입력 히스토리가 없습니다. 웹 터미널이나 에이전트 입력창에서 명령어나 프롬프트를 입력하고 전송하면 자동으로 이곳에 기록됩니다.</div>';
       return;
     }
 
     const summaryHeader = document.createElement('div');
     summaryHeader.className = 'hub-section-title';
-    summaryHeader.textContent = `📜 웹 입력 히스토리 로그 (${filtered.length}건)`;
+    summaryHeader.textContent = `📜 웹 입력 히스토리 로그 (${filtered.length}건, ${historySortOrder === 'asc' ? '과거순' : '최신순'})`;
     inputHistoryList.appendChild(summaryHeader);
 
     for (const item of filtered) {
@@ -2051,6 +2079,200 @@
       row.appendChild(actions);
       inputHistoryList.appendChild(row);
     }
+  }
+
+  async function openHistorySummaryModal() {
+    if (!historySummaryModal) return;
+    historySummaryModal.hidden = false;
+    if (historySummaryBadge) historySummaryBadge.textContent = '분석 중...';
+    if (summaryStatsBar) summaryStatsBar.innerHTML = '<div class="hub-note">시간순 요약 데이터를 집계하고 분석하는 중입니다...</div>';
+    if (summaryTimelineList) summaryTimelineList.innerHTML = '<div class="hub-note">타임라인 구성 중...</div>';
+    if (summaryMarkdownContent) summaryMarkdownContent.textContent = '보고서 생성 중...';
+
+    try {
+      const currentOnly = Boolean(inputHistorySessionFilter?.checked);
+      const sessionParam = currentOnly && activeSessionId ? `&sessionId=${encodeURIComponent(activeSessionId)}` : '';
+      const res = await fetch(`/api/input-history/summary?order=asc${sessionParam}`);
+      const json = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json.error || '요약 데이터 로드 실패');
+
+      const data = json.summary;
+      cachedSummaryData = data;
+
+      // Update badge & stats
+      if (historySummaryBadge) {
+        historySummaryBadge.textContent = `총 ${data.totalCount}건 분석 완료`;
+      }
+
+      const stats = data.statistics;
+      if (summaryStatsBar) {
+        summaryStatsBar.innerHTML = `
+          <span class="stat-pill accent">총 <strong>${stats.total}</strong>건</span>
+          <span class="stat-pill success">💬 에이전트 지시 <strong>${stats.promptCount}</strong>건</span>
+          <span class="stat-pill">🚀 CLI 명령 <strong>${stats.commandCount}</strong>건</span>
+          <span class="stat-pill warning">💡 슬래시 <strong>${stats.slashCount}</strong>건</span>
+          <span class="stat-pill">🕒 분석 기간: <strong>${stats.dateRange.start} ~ ${stats.dateRange.end}</strong></span>
+        `;
+      }
+
+      // Render Timeline
+      if (summaryTimelineList) {
+        summaryTimelineList.innerHTML = '';
+        if (!Array.isArray(data.dateGroups) || data.dateGroups.length === 0) {
+          summaryTimelineList.innerHTML = '<div class="hub-note">분석할 입력 히스토리 데이터가 없습니다.</div>';
+        } else {
+          for (const dg of data.dateGroups) {
+            const dgEl = document.createElement('div');
+            dgEl.className = 'timeline-date-group';
+
+            const headerEl = document.createElement('div');
+            headerEl.className = 'timeline-date-header';
+            const dateItemsCount = dg.blocks.reduce((acc, b) => acc + b.items.length, 0);
+            headerEl.innerHTML = `<span>🗓️ ${escapeHtml(dg.dateLabel)}</span> <span style="font-size:11px;color:var(--text-secondary);font-weight:normal;">(${dateItemsCount}건)</span>`;
+            dgEl.appendChild(headerEl);
+
+            for (let bi = 0; bi < dg.blocks.length; bi++) {
+              const b = dg.blocks[bi];
+              const timeSpan = b.startTime === b.endTime ? b.startTime : `${b.startTime} ~ ${b.endTime}`;
+              const blockEl = document.createElement('div');
+              blockEl.className = 'timeline-block-card';
+
+              blockEl.innerHTML = `
+                <div class="timeline-block-header">
+                  <span class="timeline-block-time">🕒 세션 ${bi + 1}: ${escapeHtml(timeSpan)}</span>
+                  <span class="timeline-block-session">${escapeHtml(b.sessionTitle)} (${b.items.length}개 작업)</span>
+                </div>
+                <div class="timeline-block-items"></div>
+              `;
+
+              const itemsContainer = blockEl.querySelector('.timeline-block-items');
+              for (const it of b.items) {
+                const itemRow = document.createElement('div');
+                itemRow.className = 'timeline-item';
+                const timeStr = it.createdAt ? new Date(it.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+                const icon = it.type === 'prompt' ? '💬' : it.type === 'command' ? '🚀' : '💡';
+                const repeat = it.repeatCount > 1 ? `<span class="timeline-item-repeat">(×${it.repeatCount}회)</span>` : '';
+
+                itemRow.innerHTML = `
+                  <div class="timeline-item-left">
+                    <span class="timeline-item-time">[${timeStr}]</span>
+                    <span class="item-type-badge ${it.type}">${icon} ${escapeHtml(it.typeLabel)}</span>
+                    <div class="timeline-item-text">${escapeHtml(it.text)}${repeat}</div>
+                  </div>
+                  <div class="timeline-item-actions">
+                    <button type="button" class="btn btn-chip btn-sm" title="콘솔 입력창에 삽입" data-act="input">⌨️</button>
+                    <button type="button" class="btn btn-chip btn-sm" title="클립보드 복사" data-act="copy">📋</button>
+                  </div>
+                `;
+
+                itemRow.querySelector('[data-act="input"]').addEventListener('click', () => {
+                  insertTextToActiveConsole(it.text);
+                  historySummaryModal.hidden = true;
+                });
+                itemRow.querySelector('[data-act="copy"]').addEventListener('click', () => {
+                  if (navigator.clipboard) navigator.clipboard.writeText(it.text);
+                });
+
+                itemsContainer.appendChild(itemRow);
+              }
+
+              dgEl.appendChild(blockEl);
+            }
+            summaryTimelineList.appendChild(dgEl);
+          }
+        }
+      }
+
+      // Render Markdown
+      if (summaryMarkdownContent) {
+        summaryMarkdownContent.textContent = data.markdown || '';
+      }
+    } catch (err) {
+      if (summaryStatsBar) {
+        summaryStatsBar.innerHTML = `<div class="hub-note" style="color:var(--danger)">오류: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+  }
+
+  // Summary Modal Event Listeners
+  btnOpenHistorySummary?.addEventListener('click', () => {
+    openHistorySummaryModal();
+  });
+
+  btnToggleHistorySort?.addEventListener('click', () => {
+    historySortOrder = historySortOrder === 'desc' ? 'asc' : 'desc';
+    renderInputHistoryPanel();
+  });
+
+  btnHermesQuickHistorySummary?.addEventListener('click', () => {
+    openHistorySummaryModal();
+  });
+
+  btnCloseHistorySummary?.addEventListener('click', () => {
+    if (historySummaryModal) historySummaryModal.hidden = true;
+  });
+
+  historySummaryModal?.addEventListener('click', (ev) => {
+    if (ev.target === historySummaryModal) {
+      historySummaryModal.hidden = true;
+    }
+  });
+
+  btnCopyHistorySummary?.addEventListener('click', () => {
+    if (!cachedSummaryData || !cachedSummaryData.markdown) return;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(cachedSummaryData.markdown).then(() => {
+        const orig = btnCopyHistorySummary.textContent;
+        btnCopyHistorySummary.textContent = '✓ 복사됨';
+        setTimeout(() => { btnCopyHistorySummary.textContent = orig; }, 1500);
+      });
+    }
+  });
+
+  btnDownloadHistorySummary?.addEventListener('click', () => {
+    if (!cachedSummaryData || !cachedSummaryData.markdown) return;
+    const blob = new Blob([cachedSummaryData.markdown], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `input-history-summary-${new Date().toISOString().slice(0, 10)}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  btnSendHistoryToAgent?.addEventListener('click', () => {
+    if (!cachedSummaryData || !cachedSummaryData.aiPrompt) return;
+    const prompt = cachedSummaryData.aiPrompt;
+
+    if (historySummaryModal) historySummaryModal.hidden = true;
+    if (hubDrawer) hubDrawer.hidden = true;
+
+    if (currentViewMode === 'hermes') {
+      if (hermesPromptInput) {
+        hermesPromptInput.value = prompt;
+        hermesPromptInput.style.height = 'auto';
+        hermesPromptInput.style.height = `${Math.min(hermesPromptInput.scrollHeight, 140)}px`;
+        dispatchHermesPrompt(prompt);
+      }
+    } else {
+      insertTextToActiveConsole(prompt + '\r');
+    }
+  });
+
+  const summaryTabs = document.querySelectorAll('.summary-tab');
+  for (const tab of summaryTabs) {
+    tab.addEventListener('click', () => {
+      const target = tab.dataset.summaryTab;
+      for (const t of summaryTabs) t.classList.toggle('active', t === tab);
+      const timelineView = document.getElementById('summaryViewTimeline');
+      const mdView = document.getElementById('summaryViewMarkdown');
+      if (timelineView) timelineView.classList.toggle('active', target === 'timeline');
+      if (timelineView) timelineView.hidden = target !== 'timeline';
+      if (mdView) mdView.classList.toggle('active', target === 'markdown');
+      if (mdView) mdView.hidden = target !== 'markdown';
+    });
   }
 
   function switchHubTab(tabName) {

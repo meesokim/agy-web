@@ -1063,6 +1063,195 @@ app.post('/api/naver-cafe/task-result', (req, res) => {
   res.json({ ok: true });
 });
 
+function classifyInputEntry(text) {
+  const t = String(text || '').trim();
+  if (t.startsWith('/')) {
+    return { type: 'slash', label: '슬래시 명령' };
+  }
+  const firstWord = t.split(/\s+/)[0].toLowerCase();
+  const COMMON_CLI = new Set([
+    'git', 'npm', 'npx', 'pnpm', 'yarn', 'node', 'python', 'python3', 'pip', 'curl',
+    'wget', 'ls', 'dir', 'cd', 'cat', 'echo', 'mkdir', 'rm', 'cp', 'mv', 'ps', 'kill',
+    'grep', 'find', 'sudo', 'docker', 'ssh', 'clear', 'cls', 'open', 'xdg-open',
+    'which', 'where', 'bash', 'sh', 'zsh', 'pwsh', 'powershell', 'agy'
+  ]);
+  if (COMMON_CLI.has(firstWord) || /^[a-z0-9_.-]+(\s+-[a-zA-Z0-9]+|\s+--[a-z0-9-]+)/.test(t)) {
+    return { type: 'command', label: 'CLI 쉘 명령' };
+  }
+  return { type: 'prompt', label: '에이전트 지시/프롬프트' };
+}
+
+function summarizeInputHistory(entries, options = {}) {
+  const {
+    sessionId,
+    q,
+    date,
+    order = 'asc', // 'asc' = 시간순 (과거 -> 최신), 'desc' = 최신순
+    dedup = true,
+  } = options;
+
+  let filtered = [...entries];
+  if (sessionId) {
+    filtered = filtered.filter((it) => it.sessionId === sessionId);
+  }
+  if (date && date !== 'all') {
+    filtered = filtered.filter((it) => it.createdAt && it.createdAt.startsWith(date));
+  }
+  if (q && String(q).trim()) {
+    const kw = String(q).trim().toLowerCase();
+    filtered = filtered.filter(
+      (it) =>
+        (it.text && it.text.toLowerCase().includes(kw)) ||
+        (it.sessionTitle && it.sessionTitle.toLowerCase().includes(kw)) ||
+        (it.cwd && it.cwd.toLowerCase().includes(kw))
+    );
+  }
+
+  // Sort by createdAt
+  filtered.sort((a, b) => {
+    const ta = new Date(a.createdAt || 0).getTime();
+    const tb = new Date(b.createdAt || 0).getTime();
+    return order === 'asc' ? ta - tb : tb - ta;
+  });
+
+  // Deduplication: collapse identical consecutive entries within 1 minute
+  if (dedup && dedup !== 'false') {
+    const deduped = [];
+    for (const item of filtered) {
+      const prev = deduped[deduped.length - 1];
+      if (
+        prev &&
+        prev.text.trim() === item.text.trim() &&
+        Math.abs(new Date(item.createdAt).getTime() - new Date(prev.createdAt).getTime()) < 60000
+      ) {
+        prev.repeatCount = (prev.repeatCount || 1) + 1;
+        continue;
+      }
+      deduped.push({ ...item, repeatCount: 1 });
+    }
+    filtered = deduped;
+  }
+
+  let promptCount = 0;
+  let commandCount = 0;
+  let slashCount = 0;
+  const commandFreq = new Map();
+
+  // Annotate classification
+  for (const item of filtered) {
+    const { type, label } = classifyInputEntry(item.text);
+    item.type = type;
+    item.typeLabel = label;
+    if (type === 'prompt') promptCount++;
+    else if (type === 'command') {
+      commandCount++;
+      const first = item.text.trim().split(/\s+/)[0];
+      commandFreq.set(first, (commandFreq.get(first) || 0) + 1);
+    } else if (type === 'slash') {
+      slashCount++;
+    }
+  }
+
+  // Cluster by Date (YYYY-MM-DD), then by Time Blocks (gap > 20 mins)
+  const dateGroups = [];
+  let currentDateGroup = null;
+  let currentBlock = null;
+
+  for (const item of filtered) {
+    const d = new Date(item.createdAt || 0);
+    const dateKey = !isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : '날짜 미상';
+    const dayOfWeek = !isNaN(d.getTime()) ? ['일', '월', '화', '수', '목', '금', '토'][d.getDay()] : '';
+    const dateLabel = `${dateKey} (${dayOfWeek})`;
+    const timeMs = d.getTime();
+
+    if (!currentDateGroup || currentDateGroup.dateKey !== dateKey) {
+      currentDateGroup = {
+        dateKey,
+        dateLabel,
+        blocks: [],
+      };
+      dateGroups.push(currentDateGroup);
+      currentBlock = null;
+    }
+
+    // New block if gap > 20 minutes or first item in date group
+    if (!currentBlock || timeMs - currentBlock.lastTimeMs > 20 * 60 * 1000) {
+      currentBlock = {
+        blockId: `blk-${currentDateGroup.blocks.length + 1}`,
+        startTime: d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        endTime: d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        startTimeMs: timeMs,
+        lastTimeMs: timeMs,
+        sessionTitle: item.sessionTitle || '콘솔',
+        items: [],
+      };
+      currentDateGroup.blocks.push(currentBlock);
+    }
+
+    currentBlock.lastTimeMs = timeMs;
+    currentBlock.endTime = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    currentBlock.items.push(item);
+  }
+
+  // Generate Markdown Summary
+  const startDateStr = filtered.length > 0 ? new Date(filtered[0].createdAt).toLocaleString('ko-KR') : '-';
+  const endDateStr = filtered.length > 0 ? new Date(filtered[filtered.length - 1].createdAt).toLocaleString('ko-KR') : '-';
+
+  let md = `# 📅 웹 입력 명령문 시간순 히스토리 요약 보고서\n\n`;
+  md += `- **분석 기간**: ${startDateStr} ~ ${endDateStr}\n`;
+  md += `- **총 명령/프롬프트 수**: ${filtered.length}건 (에이전트 지시: ${promptCount}건, 쉘 명령: ${commandCount}건, 슬래시: ${slashCount}건)\n`;
+  md += `- **정렬 기준**: ${order === 'asc' ? '과거순 (시간 순서대로)' : '최신순'}\n\n`;
+
+  for (const dg of dateGroups) {
+    const totalDateItems = dg.blocks.reduce((sum, b) => sum + b.items.length, 0);
+    md += `## 🗓️ ${dg.dateLabel} (총 ${totalDateItems}건)\n\n`;
+
+    for (let bi = 0; bi < dg.blocks.length; bi++) {
+      const b = dg.blocks[bi];
+      const timeSpan = b.startTime === b.endTime ? b.startTime : `${b.startTime} ~ ${b.endTime}`;
+      md += `### 🕒 세션 ${bi + 1}: ${timeSpan} [${b.sessionTitle}]\n`;
+
+      for (const it of b.items) {
+        const itemTime = it.createdAt ? new Date(it.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+        const icon = it.type === 'prompt' ? '💬' : it.type === 'command' ? '🚀' : '💡';
+        const repeat = it.repeatCount > 1 ? ` *(×${it.repeatCount}회 반복)*` : '';
+        md += `- [${itemTime}] ${icon} **${it.typeLabel}**: \`${it.text}\`${repeat}\n`;
+      }
+      md += `\n`;
+    }
+  }
+
+  // Top Commands
+  const topCommands = Array.from(commandFreq.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([cmd, count]) => ({ cmd, count }));
+
+  // AI Prompt text for agy
+  const promptList = filtered.slice(order === 'asc' ? -30 : 0, order === 'asc' ? undefined : 30);
+  const aiPrompt =
+    `다음은 웹 콘솔에서 사용자가 시간순서대로 입력한 작업 명령문 및 프롬프트 히스토리입니다:\n\n` +
+    promptList
+      .map((it, i) => `${i + 1}. [${it.createdAt?.slice(11, 19) || ''}] (${it.typeLabel}) ${it.text}`)
+      .join('\n') +
+    `\n\n위 작업 내역을 바탕으로:\n1. 사용자가 중점적으로 진행한 핵심 작업 주제 요약\n2. 주요 발견점 또는 완료된 사항\n3. 이어서 진행하기 좋은 다음 권장 작업\n을 3~5문장으로 명확히 요약 정리해줘.`;
+
+  return {
+    totalCount: filtered.length,
+    statistics: {
+      total: filtered.length,
+      promptCount,
+      commandCount,
+      slashCount,
+      dateRange: { start: startDateStr, end: endDateStr },
+      topCommands,
+    },
+    dateGroups,
+    markdown: md,
+    aiPrompt,
+  };
+}
+
 // REST API: Web Input History Log
 app.get('/api/input-history', (req, res) => {
   const { sessionId, q } = req.query || {};
@@ -1079,6 +1268,12 @@ app.get('/api/input-history', (req, res) => {
     );
   }
   res.json({ history: list });
+});
+
+// REST API: Web Input History Chronological Summary
+app.get('/api/input-history/summary', (req, res) => {
+  const summary = summarizeInputHistory(inputHistoryList, req.query || {});
+  res.json({ ok: true, summary });
 });
 
 app.post('/api/input-history', (req, res) => {

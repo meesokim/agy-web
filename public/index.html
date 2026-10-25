@@ -145,6 +145,9 @@
           <div class="hermes-sidebar-section" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
             <div class="hermes-section-label">⚡ 빠른 실행 작업 (Skills)</div>
             <div class="hermes-quick-prompts">
+              <button type="button" class="hermes-prompt-chip" id="btnHermesQuickHistorySummary" title="웹에서 입력한 사용자 명령문과 작업 흐름을 시간순으로 요약 분석">
+                ⏱️ 웹 입력 히스토리 시간순 요약
+              </button>
               <button type="button" class="hermes-prompt-chip" data-prompt="코드베이스 전체 구조를 분석하고 핵심 파일 및 역할을 요약해줘">
                 🔍 코드베이스 구조 분석
               </button>
@@ -332,6 +335,50 @@
     </div>
   </div>
 
+  <!-- Modal for Chronological Input History Summary -->
+  <div class="modal-backdrop" id="historySummaryModal" hidden>
+    <div class="modal-card history-summary-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-header-left">
+          <h3 id="historySummaryModalTitle">⏱️ 웹 입력 히스토리 시간순 요약 보고서</h3>
+          <span class="history-summary-stats-badge" id="historySummaryBadge">분석 중...</span>
+        </div>
+        <button class="modal-close" id="btnCloseHistorySummary" aria-label="닫기">✕</button>
+      </div>
+
+      <div class="summary-modal-toolbar">
+        <div class="summary-tabs">
+          <button type="button" class="summary-tab active" data-summary-tab="timeline">🕒 시간순 타임라인</button>
+          <button type="button" class="summary-tab" data-summary-tab="markdown">📝 마크다운 보고서</button>
+        </div>
+        <div class="summary-actions">
+          <button type="button" class="btn btn-primary btn-sm" id="btnSendHistoryToAgent" title="에이전트(agy)에게 이 시간순 작업 흐름을 요약/분석하도록 프롬프트 전달">
+            🤖 에이전트에게 분석 요청
+          </button>
+          <button type="button" class="btn btn-subtle btn-sm" id="btnCopyHistorySummary" title="요약 마크다운 클립보드 복사">
+            📋 복사
+          </button>
+          <button type="button" class="btn btn-subtle btn-sm" id="btnDownloadHistorySummary" title="요약 파일(.md) 다운로드">
+            📥 다운로드
+          </button>
+        </div>
+      </div>
+
+      <div class="summary-stats-bar" id="summaryStatsBar">
+        <!-- Rendered summary statistics -->
+      </div>
+
+      <div class="summary-modal-body">
+        <div class="summary-view-panel active" id="summaryViewTimeline">
+          <div class="summary-timeline-list" id="summaryTimelineList"></div>
+        </div>
+        <div class="summary-view-panel" id="summaryViewMarkdown" hidden>
+          <pre><code id="summaryMarkdownContent"></code></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Slide-over Drawer: Bookmarks & Open Browser Tabs Hub -->
   <aside class="hub-drawer" id="hubDrawer" hidden>
     <div class="hub-header">
@@ -401,6 +448,12 @@
         <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:#8b949e;cursor:pointer;">
           <input type="checkbox" id="inputHistorySessionFilter" /> 현재 세션만
         </label>
+        <button class="btn btn-primary" id="btnOpenHistorySummary" title="시간순 작업 타임라인 및 요약 보고서 보기">
+          ⏱️ 시간순 요약
+        </button>
+        <button class="btn btn-subtle" id="btnToggleHistorySort" title="정렬 기준 전환 (시간순 / 최신순)">
+          ⬇️ 최신순
+        </button>
         <button class="btn btn-subtle" id="btnRefreshInputHistory" title="새로고침">🔄</button>
         <button class="btn btn-subtle" id="btnDownloadInputHistory" title="히스토리 로그 파일(.txt) 다운로드">📥</button>
         <button class="btn btn-subtle" id="btnClearInputHistory" title="전체 입력 히스토리 비우기">🗑️</button>
