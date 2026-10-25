@@ -22,6 +22,18 @@
         <!-- Dynamic session tabs rendered here -->
       </div>
 
+      <div class="view-mode-selector" id="viewModeSelector" role="radiogroup" aria-label="화면 뷰 모드">
+        <button type="button" class="view-mode-btn active" data-mode="hermes" title="Hermes Desktop 에이전트 3-Pane 환경">
+          🏛️ Hermes Agent
+        </button>
+        <button type="button" class="view-mode-btn" data-mode="split" title="에이전트 채팅 + 실시간 터미널 50:50 분할">
+          ⚖️ 50:50 분할
+        </button>
+        <button type="button" class="view-mode-btn" data-mode="terminal" title="전체화면 CLI 터미널">
+          ⚡ 전체 터미널
+        </button>
+      </div>
+
       <div class="top-actions">
         <button class="btn btn-subtle" id="btnToggleHub" title="내부 북마크 관리, 브라우저 북마크 및 열린 탭 조회">
           <span>🧭 북마크 & 탭 허브</span>
@@ -93,17 +105,188 @@
       </div>
     </div>
 
-    <!-- Main Terminal Viewport Area -->
-    <main class="terminal-stage" id="terminalStage">
-      <!-- Each session gets its own .terminal-pane element -->
-      <div class="empty-state" id="emptyState" hidden>
-        <div class="empty-card">
-          <h2>열려 있는 콘솔 세션이 없습니다</h2>
-          <p>새 콘솔 세션을 생성하면 PTY 파이프라인을 통해 쉘 및 <code>agy</code> CLI가 즉시 실행됩니다.</p>
-          <button class="btn btn-primary btn-lg" id="btnEmptyCreate">＋ 새 AGY 콘솔 시작하기</button>
-        </div>
+    <!-- Workspace Container (Hermes Desktop 3-Pane / Split / Terminal) -->
+    <div class="workspace-container" id="workspaceContainer" data-view-mode="hermes">
+      <!-- 1. Hermes Desktop Multi-Pane View -->
+      <div class="hermes-workspace" id="hermesWorkspace">
+        
+        <!-- Pane 1: Left Control Sidebar -->
+        <aside class="hermes-sidebar" id="hermesSidebar">
+          <div class="hermes-agent-card">
+            <div class="hermes-avatar">
+              <span class="hermes-avatar-icon">🏛️</span>
+              <span class="hermes-status-badge idle" id="hermesStatusBadge">대기 중</span>
+            </div>
+            <div class="hermes-agent-meta">
+              <div class="hermes-agent-name">Hermes Agent</div>
+              <div class="hermes-agent-sub" id="hermesAgentSub">Antigravity CLI Core</div>
+            </div>
+          </div>
+
+          <div class="hermes-sidebar-section">
+            <label class="hermes-section-label" for="hermesModelSelect">⚡ LLM 모델 선택</label>
+            <select class="hermes-select" id="hermesModelSelect">
+              <option value="gemini-2.5-pro">Gemini 2.5 Pro (기본/고지능)</option>
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash (초고속)</option>
+              <option value="claude-3-7-sonnet">Claude 3.7 Sonnet</option>
+              <option value="o3-mini">OpenAI o3-mini</option>
+              <option value="deepseek-r1">DeepSeek R1</option>
+            </select>
+          </div>
+
+          <div class="hermes-sidebar-section">
+            <div class="hermes-section-label-row">
+              <span class="hermes-section-label">📁 작업 디렉토리</span>
+              <button type="button" class="btn btn-chip btn-sm" id="btnRefreshWorkspaceDir" title="폴더 새로고침">🔄</button>
+            </div>
+            <div class="hermes-cwd-display" id="hermesCwdDisplay" title="현재 세션 시작 작업 디렉토리">/home/msx/agy-web</div>
+          </div>
+
+          <div class="hermes-sidebar-section" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
+            <div class="hermes-section-label">⚡ 빠른 실행 작업 (Skills)</div>
+            <div class="hermes-quick-prompts">
+              <button type="button" class="hermes-prompt-chip" data-prompt="코드베이스 전체 구조를 분석하고 핵심 파일 및 역할을 요약해줘">
+                🔍 코드베이스 구조 분석
+              </button>
+              <button type="button" class="hermes-prompt-chip" data-prompt="git status 및 변경된 파일의 diff를 점검하고 커밋 메시지를 추천해줘">
+                ⚡ Git 변경점 점검 & 커밋
+              </button>
+              <button type="button" class="hermes-prompt-chip" data-prompt="현재 프로젝트의 테스트를 실행하고 실패 원인을 분석해줘">
+                🧪 단위 테스트 실행 및 진단
+              </button>
+              <button type="button" class="hermes-prompt-chip" data-prompt="최근 발견된 에러 로그나 버그를 추적하고 해결책을 구현해줘">
+                🐛 에러 진단 및 버그 수정
+              </button>
+              <button type="button" class="hermes-prompt-chip" data-prompt="프로젝트의 주요 기능과 사용법을 정리하여 README.md 문서를 보완해줘">
+                📄 문서화 및 설명서 작성
+              </button>
+            </div>
+          </div>
+
+          <div class="hermes-sidebar-footer">
+            <div class="hermes-stat-item">
+              <span class="stat-label">도구 호출</span>
+              <span class="stat-value" id="hermesStatToolCount">0회</span>
+            </div>
+            <div class="hermes-stat-item">
+              <span class="stat-label">세션 상태</span>
+              <span class="stat-value" id="hermesStatState">준비 완료</span>
+            </div>
+          </div>
+        </aside>
+
+        <!-- Pane 2: Center Agent Interaction Timeline & Composer -->
+        <section class="hermes-chat-pane" id="hermesChatPane">
+          <div class="hermes-chat-feed" id="hermesChatFeed">
+            <div class="hermes-welcome-card" id="hermesWelcomeCard">
+              <div class="welcome-icon">🏛️</div>
+              <h3>Hermes Desktop Agent</h3>
+              <p>Antigravity CLI와 긴밀히 연동된 지능형 에이전트 데스크탑 환경입니다. 대화형 지시, 도구 호출 시각화, 파일 검사 및 실시간 PTY 터미널이 통합되어 있습니다.</p>
+              <div class="welcome-shortcuts">
+                <span>단축키: <code>Enter</code> 전송, <code>Shift+Enter</code> 줄바꿈, <code>Ctrl+C</code> 실행 중단</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Bottom Sticky Composer -->
+          <div class="hermes-composer-area" id="hermesComposerArea">
+            <div class="hermes-composer-toolbar">
+              <div class="composer-tags">
+                <span class="composer-tag" id="composerModelTag">Gemini 2.5 Pro</span>
+                <span class="composer-status" id="composerStatusText">대기 중</span>
+              </div>
+              <div class="composer-quick-actions">
+                <button type="button" class="btn btn-chip btn-sm" data-cmd="/help" title="agy 도움말">/help</button>
+                <button type="button" class="btn btn-chip btn-sm" data-cmd="/compact" title="컨텍스트 압축">/compact</button>
+                <button type="button" class="btn btn-chip btn-sm" data-cmd="/clear" title="화면 정리">/clear</button>
+              </div>
+            </div>
+
+            <div class="hermes-input-box">
+              <textarea
+                id="hermesPromptInput"
+                class="hermes-textarea"
+                placeholder="에이전트에게 지시할 작업을 입력하세요... (Enter로 전송, Shift+Enter로 줄바꿈)"
+                rows="1"
+              ></textarea>
+              <div class="hermes-input-actions">
+                <button type="button" class="btn btn-subtle btn-icon" id="btnHermesInterrupt" title="에이전트 실행 중단 (Ctrl+C)">
+                  ⏹ 중지
+                </button>
+                <button type="button" class="btn btn-primary btn-icon" id="btnHermesSend" title="에이전트에게 전송 (Enter)">
+                  🚀 전송
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Pane 3: Right Inspector Rail -->
+        <aside class="hermes-rail" id="hermesRail">
+          <div class="hermes-rail-tabs">
+            <button type="button" class="hermes-rail-tab active" data-rail-tab="terminal">💻 실시간 터미널</button>
+            <button type="button" class="hermes-rail-tab" data-rail-tab="files">📁 파일 탐색기</button>
+            <button type="button" class="hermes-rail-tab" data-rail-tab="audit">📊 실행 로그</button>
+            <button type="button" class="hermes-rail-tab" data-rail-tab="preview">🖼️ 미리보기</button>
+          </div>
+
+          <!-- Rail Panel: Live Terminal Dock -->
+          <div class="hermes-rail-panel active" id="railPanelTerminal">
+            <div class="rail-panel-bar">
+              <span class="rail-bar-title">PTY ConPTY 실시간 터미널</span>
+              <button type="button" class="btn btn-chip btn-sm" id="btnPopoutTerminal" title="전체 터미널 모드로 전환">⚡ 전체화면</button>
+            </div>
+            <div class="rail-terminal-host" id="railTerminalHost"></div>
+          </div>
+
+          <!-- Rail Panel: Workspace Files -->
+          <div class="hermes-rail-panel" id="railPanelFiles" hidden>
+            <div class="rail-panel-bar">
+              <span class="rail-bar-title" id="railFilesPath">/home/msx/agy-web</span>
+              <div class="rail-bar-actions">
+                <button type="button" class="btn btn-chip btn-sm" id="btnRailFilesParent" title="상위 폴더 이동">⬆ 상위</button>
+                <button type="button" class="btn btn-chip btn-sm" id="btnRailFilesRefresh" title="새로고침">🔄</button>
+              </div>
+            </div>
+            <div class="rail-file-tree" id="railFileTree"></div>
+          </div>
+
+          <!-- Rail Panel: Tool Audit Log -->
+          <div class="hermes-rail-panel" id="railPanelAudit" hidden>
+            <div class="rail-panel-bar">
+              <span class="rail-bar-title">도구 실행 감사 로그</span>
+              <button type="button" class="btn btn-chip btn-sm" id="btnRailAuditClear" title="로그 비우기">🗑️</button>
+            </div>
+            <div class="rail-audit-list" id="railAuditList"></div>
+          </div>
+
+          <!-- Rail Panel: Preview -->
+          <div class="hermes-rail-panel" id="railPanelPreview" hidden>
+            <div class="rail-panel-bar">
+              <span class="rail-bar-title" id="railPreviewTitle">미리보기 (HTML / 마크다운 / 이미지)</span>
+            </div>
+            <div class="rail-preview-body" id="railPreviewBody">
+              <div class="rail-preview-empty">에이전트가 생성한 HTML, 차트, 이미지 또는 파일이 여기에 렌더링됩니다.</div>
+            </div>
+          </div>
+        </aside>
       </div>
-    </main>
+
+      <!-- Docking Host for Split or Full Terminal View -->
+      <div class="terminal-stage-container" id="terminalStageContainer">
+        <!-- Main Terminal Viewport Area -->
+        <main class="terminal-stage" id="terminalStage">
+          <!-- Each session gets its own .terminal-pane element -->
+          <div class="empty-state" id="emptyState" hidden>
+            <div class="empty-card">
+              <h2>열려 있는 콘솔 세션이 없습니다</h2>
+              <p>새 콘솔 세션을 생성하면 PTY 파이프라인을 통해 쉘 및 <code>agy</code> CLI가 즉시 실행됩니다.</p>
+              <button class="btn btn-primary btn-lg" id="btnEmptyCreate">＋ 새 AGY 콘솔 시작하기</button>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
   </div>
 
   <!-- Modal for Custom Session Creation -->
@@ -133,6 +316,19 @@
           <button type="submit" class="btn btn-primary">콘솔 생성</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Modal for File Inspection Preview -->
+  <div class="modal-backdrop" id="fileViewerModal" hidden>
+    <div class="modal-card file-viewer-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h3 id="fileViewerTitle">📄 파일 미리보기</h3>
+        <button class="modal-close" id="btnCloseFileViewer" aria-label="닫기">✕</button>
+      </div>
+      <div class="file-viewer-body">
+        <pre><code id="fileViewerContent"></code></pre>
+      </div>
     </div>
   </div>
 

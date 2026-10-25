@@ -609,6 +609,12 @@ function createSession({
     agyTriggered: false,
     agyBootCleaned: false,
     compactLogs: true,
+    agentActivity: {
+      status: 'idle',
+      currentTool: null,
+      recentToolCalls: [],
+    },
+    hermesHistory: [],
   };
 
   const compactAgyProgress = (raw) => {
@@ -695,6 +701,79 @@ function createSession({
     appendScrollback(data);
     broadcast({ type: 'output', data });
 
+    // Hermes Agent Activity Detection from PTY Stream
+    if (!session.agentActivity) {
+      session.agentActivity = {
+        status: 'idle',
+        currentTool: null,
+        recentToolCalls: [],
+      };
+    }
+    const plain = rawData
+      .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
+      .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '');
+    let statusChanged = false;
+
+    if (plain.includes('Thought for') || plain.includes('Thinking...')) {
+      if (session.agentActivity.status !== 'thinking') {
+        session.agentActivity.status = 'thinking';
+        statusChanged = true;
+      }
+    } else if (
+      plain.includes('Running command...') ||
+      plain.includes('● Ran') ||
+      plain.includes('● Explored') ||
+      plain.includes('● Read') ||
+      plain.includes('● Edited') ||
+      plain.includes('● Created')
+    ) {
+      const match = plain.match(
+        /●\s+(Ran|Explored|Read|Edited|Created|Running command\.\.\.)\s*([^\r\n]*)/
+      );
+      const toolAction = match ? match[1] : 'tool';
+      const toolTarget = match ? match[2].trim() : '';
+      const fullLabel = toolTarget ? `${toolAction}: ${toolTarget}` : toolAction;
+      if (
+        session.agentActivity.status !== 'tool_executing' ||
+        session.agentActivity.currentTool !== fullLabel
+      ) {
+        session.agentActivity.status = 'tool_executing';
+        session.agentActivity.currentTool = fullLabel;
+        session.agentActivity.recentToolCalls.unshift({
+          id: `tool-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+          action: toolAction,
+          target: toolTarget,
+          timestamp: new Date().toISOString(),
+          status: 'running',
+        });
+        if (session.agentActivity.recentToolCalls.length > 50) {
+          session.agentActivity.recentToolCalls.length = 50;
+        }
+        statusChanged = true;
+      }
+    } else if (plain.includes('? for shortcuts') || plain.includes('Goodbye!')) {
+      if (session.agentActivity.status !== 'idle') {
+        session.agentActivity.status = 'idle';
+        if (
+          session.agentActivity.recentToolCalls.length > 0 &&
+          session.agentActivity.recentToolCalls[0].status === 'running'
+        ) {
+          session.agentActivity.recentToolCalls[0].status = 'completed';
+        }
+        session.agentActivity.currentTool = null;
+        statusChanged = true;
+      }
+    }
+
+    if (statusChanged) {
+      broadcast({
+        type: 'hermes_agent_status',
+        status: session.agentActivity.status,
+        currentTool: session.agentActivity.currentTool,
+        recentToolCalls: session.agentActivity.recentToolCalls.slice(0, 20),
+      });
+    }
+
     // Trigger `agy` automatically once the initial shell stream starts
     if (session.autoRunAgy && !session.agyTriggered) {
       session.agyTriggered = true;
@@ -771,6 +850,11 @@ function serializeSession(session) {
     exited: session.exited,
     exitCode: session.exitCode,
     clientCount: session.clients.size,
+    agentActivity: session.agentActivity || {
+      status: 'idle',
+      currentTool: null,
+      recentToolCalls: [],
+    },
   };
 }
 
@@ -1128,6 +1212,216 @@ app.delete('/api/sessions/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// --- Hermes Desktop Agent API ---
+
+// 1. Get Hermes Agent status & history
+app.get('/api/hermes/status', (req, res) => {
+  const sessionId = req.query.sessionId || PRIMARY_SESSION_ID;
+  if (sessions.size === 0) ensurePrimarySession();
+  const session = sessions.get(sessionId) || sessions.values().next().value;
+  if (!session) return res.status(404).json({ error: '세션을 찾을 수 없습니다.' });
+
+  res.json({
+    session: serializeSession(session),
+    agentActivity: session.agentActivity || { status: 'idle', currentTool: null, recentToolCalls: [] },
+    history: session.hermesHistory || [],
+  });
+});
+
+// 2. Dispatch Prompt to Hermes Agent
+app.post('/api/hermes/prompt', (req, res) => {
+  const { sessionId = PRIMARY_SESSION_ID, prompt, model } = req.body || {};
+  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+    return res.status(400).json({ error: '프롬프트 내용이 비어있습니다.' });
+  }
+
+  if (sessions.size === 0) ensurePrimarySession();
+  const session = sessions.get(sessionId) || sessions.values().next().value;
+  if (!session || session.exited) {
+    return res.status(404).json({ error: '활성 콘솔 세션을 찾을 수 없습니다.' });
+  }
+
+  const promptText = prompt.trim();
+  const historyEntry = {
+    id: `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    role: 'user',
+    content: promptText,
+    model: model || null,
+    timestamp: new Date().toISOString(),
+  };
+
+  if (!session.hermesHistory) session.hermesHistory = [];
+  session.hermesHistory.push(historyEntry);
+  if (session.hermesHistory.length > 200) {
+    session.hermesHistory = session.hermesHistory.slice(-200);
+  }
+
+  // Update agentActivity status to thinking
+  if (!session.agentActivity) {
+    session.agentActivity = { status: 'thinking', currentTool: null, recentToolCalls: [] };
+  } else {
+    session.agentActivity.status = 'thinking';
+  }
+
+  // Write prompt to PTY
+  const payloadStr = `${promptText}\r`;
+  processSessionInputForHistory(session, payloadStr);
+  session.ptyProcess.write(payloadStr);
+
+  // Broadcast to WS clients
+  const broadcastMsg = JSON.stringify({
+    type: 'hermes_prompt_dispatched',
+    sessionId: session.id,
+    entry: historyEntry,
+    agentActivity: session.agentActivity,
+  });
+  for (const ws of session.clients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(broadcastMsg);
+    }
+  }
+
+  res.json({ ok: true, sessionId: session.id, entry: historyEntry });
+});
+
+// 3. Send SIGINT / Interrupt to Agent
+app.post('/api/hermes/interrupt', (req, res) => {
+  const { sessionId = PRIMARY_SESSION_ID } = req.body || {};
+  const session = sessions.get(sessionId) || sessions.values().next().value;
+  if (!session || session.exited) {
+    return res.status(404).json({ error: '활성 콘솔 세션을 찾을 수 없습니다.' });
+  }
+
+  session.ptyProcess.write('\x03');
+  if (session.agentActivity) {
+    session.agentActivity.status = 'idle';
+    session.agentActivity.currentTool = null;
+  }
+
+  const broadcastMsg = JSON.stringify({
+    type: 'hermes_agent_status',
+    status: 'idle',
+    currentTool: null,
+    recentToolCalls: session.agentActivity ? session.agentActivity.recentToolCalls : [],
+  });
+  for (const ws of session.clients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(broadcastMsg);
+    }
+  }
+
+  res.json({ ok: true, sessionId: session.id });
+});
+
+// 4. Workspace Directory Inspection
+app.get('/api/hermes/workspace', (req, res) => {
+  const sessionId = req.query.sessionId || PRIMARY_SESSION_ID;
+  const session = sessions.get(sessionId);
+  const baseCwd = session ? session.cwd : process.cwd();
+  let targetDir = req.query.dir || baseCwd;
+
+  try {
+    if (!path.isAbsolute(targetDir)) {
+      targetDir = path.resolve(baseCwd, targetDir);
+    }
+    if (!fs.existsSync(targetDir)) {
+      return res.status(404).json({ error: '디렉토리가 존재하지 않습니다.' });
+    }
+    const stat = fs.statSync(targetDir);
+    if (!stat.isDirectory()) {
+      return res.status(400).json({ error: '디렉토리가 아닙니다.' });
+    }
+
+    const entries = fs.readdirSync(targetDir, { withFileTypes: true });
+    const items = [];
+    for (const entry of entries) {
+      if (entry.name === '.git' && !req.query.all) {
+        items.push({
+          name: entry.name,
+          path: path.join(targetDir, entry.name),
+          isDirectory: true,
+          size: 0,
+          ext: '',
+          isSpecial: true,
+        });
+        continue;
+      }
+      const fullPath = path.join(targetDir, entry.name);
+      try {
+        const entStat = fs.statSync(fullPath);
+        items.push({
+          name: entry.name,
+          path: fullPath,
+          isDirectory: entStat.isDirectory(),
+          size: entStat.size,
+          mtime: entStat.mtime.toISOString(),
+          ext: path.extname(entry.name).toLowerCase(),
+        });
+      } catch (_) {
+        // Skip inaccessible entries
+      }
+    }
+
+    // Sort: directories first, then alphabetically
+    items.sort((a, b) => {
+      if (a.isDirectory && !b.isDirectory) return -1;
+      if (!a.isDirectory && b.isDirectory) return 1;
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    });
+
+    res.json({
+      cwd: targetDir,
+      parent: path.dirname(targetDir) !== targetDir ? path.dirname(targetDir) : null,
+      items,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message || '작업 디렉토리 탐색 실패' });
+  }
+});
+
+// 5. Workspace File Content Inspection
+app.get('/api/hermes/file', (req, res) => {
+  const filePath = req.query.path;
+  if (!filePath || typeof filePath !== 'string') {
+    return res.status(400).json({ error: '파일 경로(path)를 지정해야 합니다.' });
+  }
+
+  try {
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: '파일이 존재하지 않습니다.' });
+    }
+    const stat = fs.statSync(filePath);
+    if (stat.isDirectory()) {
+      return res.status(400).json({ error: '폴더는 직접 읽을 수 없습니다.' });
+    }
+
+    // Protect against huge files
+    const MAX_PREVIEW_SIZE = 2 * 1024 * 1024; // 2MB
+    if (stat.size > MAX_PREVIEW_SIZE) {
+      return res.json({
+        path: filePath,
+        name: path.basename(filePath),
+        size: stat.size,
+        ext: path.extname(filePath).toLowerCase(),
+        truncated: true,
+        content: `// 파일 크기(${Math.round(stat.size / 1024)}KB)가 커서 앞부분만 표시합니다.\n` +
+          fs.readFileSync(filePath, { encoding: 'utf8', flag: 'r' }).slice(0, 100000),
+      });
+    }
+
+    const content = fs.readFileSync(filePath, 'utf8');
+    res.json({
+      path: filePath,
+      name: path.basename(filePath),
+      size: stat.size,
+      ext: path.extname(filePath).toLowerCase(),
+      content,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message || '파일 읽기 실패' });
+  }
+});
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
@@ -1156,6 +1450,8 @@ wss.on('connection', (ws, req) => {
       session: serializeSession(session),
       scrollback: session.scrollback,
       inlineItems: session.inlineItems ? Array.from(session.inlineItems.values()) : [],
+      agentActivity: session.agentActivity || { status: 'idle', currentTool: null, recentToolCalls: [] },
+      hermesHistory: session.hermesHistory || [],
     })
   );
 

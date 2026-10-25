@@ -455,6 +455,14 @@
               sessionInlineItems.set(it.id, it);
             }
           }
+          if (msg.agentActivity) {
+            handleHermesAgentStatus(msg.agentActivity);
+          }
+          if (Array.isArray(msg.hermesHistory)) {
+            for (const item of msg.hermesHistory) {
+              renderHermesHistoryItem(item);
+            }
+          }
           // Fit terminal to viewport before reset and write so columns/rows match exactly
           entry.fitAddon.fit();
           entry.term.reset();
@@ -471,6 +479,10 @@
             renderTabs();
             updateToolbarStatus();
           }
+        } else if (msg.type === 'hermes_agent_status') {
+          handleHermesAgentStatus(msg);
+        } else if (msg.type === 'hermes_prompt_dispatched') {
+          handleHermesPromptDispatched(msg);
         } else if (msg.type === 'output') {
           entry.term.write(compactTerminalProgress(msg.data));
         } else if (msg.type === 'open_url') {
@@ -2281,6 +2293,515 @@
     setTimeout(() => fetchOpenBrowserTabs(), 1500);
   });
 
+  // ==========================================================================
+  // Hermes Desktop Agent Integration
+  // ==========================================================================
+
+  const STORAGE_VIEW_MODE_KEY = 'agy_web_view_mode';
+  let currentViewMode = localStorage.getItem(STORAGE_VIEW_MODE_KEY) || 'hermes';
+
+  const workspaceContainer = document.getElementById('workspaceContainer');
+  const viewModeSelector = document.getElementById('viewModeSelector');
+  const hermesWorkspace = document.getElementById('hermesWorkspace');
+  const terminalStageContainer = document.getElementById('terminalStageContainer');
+  const railTerminalHost = document.getElementById('railTerminalHost');
+
+  // Hermes Left Sidebar & Status Elements
+  const hermesStatusBadge = document.getElementById('hermesStatusBadge');
+  const hermesAgentSub = document.getElementById('hermesAgentSub');
+  const hermesModelSelect = document.getElementById('hermesModelSelect');
+  const hermesCwdDisplay = document.getElementById('hermesCwdDisplay');
+  const btnRefreshWorkspaceDir = document.getElementById('btnRefreshWorkspaceDir');
+  const hermesStatToolCount = document.getElementById('hermesStatToolCount');
+  const hermesStatState = document.getElementById('hermesStatState');
+
+  // Hermes Chat Feed & Composer
+  const hermesChatFeed = document.getElementById('hermesChatFeed');
+  const hermesWelcomeCard = document.getElementById('hermesWelcomeCard');
+  const composerModelTag = document.getElementById('composerModelTag');
+  const composerStatusText = document.getElementById('composerStatusText');
+  const hermesPromptInput = document.getElementById('hermesPromptInput');
+  const btnHermesSend = document.getElementById('btnHermesSend');
+  const btnHermesInterrupt = document.getElementById('btnHermesInterrupt');
+
+  // Hermes Rail Elements
+  const hermesRailTabs = document.querySelectorAll('.hermes-rail-tab');
+  const hermesRailPanels = document.querySelectorAll('.hermes-rail-panel');
+  const btnPopoutTerminal = document.getElementById('btnPopoutTerminal');
+  const railFilesPath = document.getElementById('railFilesPath');
+  const btnRailFilesParent = document.getElementById('btnRailFilesParent');
+  const btnRailFilesRefresh = document.getElementById('btnRailFilesRefresh');
+  const railFileTree = document.getElementById('railFileTree');
+  const railAuditList = document.getElementById('railAuditList');
+  const btnRailAuditClear = document.getElementById('btnRailAuditClear');
+  const railPreviewBody = document.getElementById('railPreviewBody');
+
+  // File Viewer Modal
+  const fileViewerModal = document.getElementById('fileViewerModal');
+  const fileViewerTitle = document.getElementById('fileViewerTitle');
+  const fileViewerContent = document.getElementById('fileViewerContent');
+  const btnCloseFileViewer = document.getElementById('btnCloseFileViewer');
+
+  let currentRailDir = defaultCwd;
+  let currentRailParent = null;
+  const renderedMessageIds = new Set();
+  const renderedToolIds = new Set();
+
+  function escapeHtml(str) {
+    if (!str || typeof str !== 'string') return '';
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function setViewMode(mode) {
+    currentViewMode = mode;
+    localStorage.setItem(STORAGE_VIEW_MODE_KEY, mode);
+    if (workspaceContainer) {
+      workspaceContainer.dataset.viewMode = mode;
+    }
+
+    // Update active button
+    if (viewModeSelector) {
+      for (const btn of viewModeSelector.querySelectorAll('.view-mode-btn')) {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+      }
+    }
+
+    // Dock or undock terminalStage
+    if (terminalStage) {
+      if (mode === 'hermes' && railTerminalHost) {
+        if (!railTerminalHost.contains(terminalStage)) {
+          railTerminalHost.appendChild(terminalStage);
+        }
+      } else if (terminalStageContainer) {
+        if (!terminalStageContainer.contains(terminalStage)) {
+          terminalStageContainer.appendChild(terminalStage);
+        }
+      }
+    }
+
+    setTimeout(() => {
+      fitActiveTerminal();
+    }, 50);
+  }
+
+  function handleHermesAgentStatus(data) {
+    if (!data) return;
+    const status = data.status || 'idle';
+    const currentTool = data.currentTool || null;
+
+    if (hermesStatusBadge) {
+      hermesStatusBadge.className = `hermes-status-badge ${status === 'tool_executing' ? 'tool' : status}`;
+      hermesStatusBadge.textContent =
+        status === 'tool_executing' ? '도구 실행' : status === 'thinking' ? '사고 중' : '대기 중';
+    }
+
+    if (hermesAgentSub) {
+      hermesAgentSub.textContent =
+        status === 'tool_executing' && currentTool ? currentTool : 'Antigravity CLI Core';
+    }
+
+    if (composerStatusText) {
+      composerStatusText.textContent =
+        status === 'tool_executing' && currentTool
+          ? `실행 중: ${currentTool}`
+          : status === 'thinking'
+          ? '추론 및 생각 중...'
+          : '대기 중';
+    }
+
+    if (hermesStatState) {
+      hermesStatState.textContent =
+        status === 'tool_executing' ? '도구 실행' : status === 'thinking' ? '추론 진행' : '준비 완료';
+    }
+
+    if (Array.isArray(data.recentToolCalls)) {
+      if (hermesStatToolCount) {
+        hermesStatToolCount.textContent = `${data.recentToolCalls.length}회`;
+      }
+      renderAuditLog(data.recentToolCalls);
+      // Also render active or recent tool call in chat feed
+      for (const tc of data.recentToolCalls.slice(0, 5).reverse()) {
+        appendHermesToolCard(tc);
+      }
+    }
+  }
+
+  function handleHermesPromptDispatched(msg) {
+    if (!msg || !msg.entry) return;
+    appendHermesMessage(msg.entry);
+  }
+
+  function appendHermesMessage(entry) {
+    if (!hermesChatFeed || !entry) return;
+    if (entry.id && renderedMessageIds.has(entry.id)) return;
+    if (entry.id) renderedMessageIds.add(entry.id);
+
+    if (hermesWelcomeCard) {
+      hermesWelcomeCard.style.display = 'none';
+    }
+
+    const isUser = entry.role === 'user';
+    const msgEl = document.createElement('div');
+    msgEl.className = `hermes-message ${isUser ? 'user' : 'agent'}`;
+
+    const timeStr = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    msgEl.innerHTML = `
+      <div class="hermes-message-header">
+        <span>${isUser ? '👤 사용자' : '🏛️ Hermes Agent'}</span>
+        ${entry.model ? `<span class="composer-tag">${escapeHtml(entry.model)}</span>` : ''}
+        <span>${timeStr}</span>
+      </div>
+      <div class="hermes-message-bubble">${escapeHtml(entry.content).replace(/\n/g, '<br/>')}</div>
+    `;
+
+    hermesChatFeed.appendChild(msgEl);
+    hermesChatFeed.scrollTop = hermesChatFeed.scrollHeight;
+  }
+
+  function appendHermesToolCard(tool) {
+    if (!hermesChatFeed || !tool || !tool.id) return;
+
+    if (hermesWelcomeCard) {
+      hermesWelcomeCard.style.display = 'none';
+    }
+
+    let existingCard = hermesChatFeed.querySelector(`[data-tool-id="${tool.id}"]`);
+    if (existingCard) {
+      // Update status
+      existingCard.className = `hermes-tool-card ${tool.status || 'completed'}`;
+      const statusPill = existingCard.querySelector('.tool-status-pill');
+      if (statusPill) {
+        statusPill.className = `tool-status-pill ${tool.status || 'completed'}`;
+        statusPill.textContent = tool.status === 'running' ? '실행 중' : '완료됨';
+      }
+      return;
+    }
+
+    renderedToolIds.add(tool.id);
+    const card = document.createElement('div');
+    card.className = `hermes-tool-card ${tool.status || 'completed'}`;
+    card.dataset.toolId = tool.id;
+
+    card.innerHTML = `
+      <div class="tool-header">
+        <div class="tool-left">
+          <span class="tool-action-badge">● ${escapeHtml(tool.action || 'Tool')}</span>
+          <span class="tool-target-text">${escapeHtml(tool.target || '')}</span>
+        </div>
+        <span class="tool-status-pill ${tool.status || 'completed'}">
+          ${tool.status === 'running' ? '실행 중' : '완료됨'}
+        </span>
+      </div>
+      <div class="tool-body" hidden>도구 실행 명령: ${escapeHtml(tool.action)} ${escapeHtml(tool.target || '')}</div>
+    `;
+
+    card.querySelector('.tool-header').addEventListener('click', () => {
+      const body = card.querySelector('.tool-body');
+      body.hidden = !body.hidden;
+    });
+
+    hermesChatFeed.appendChild(card);
+    hermesChatFeed.scrollTop = hermesChatFeed.scrollHeight;
+  }
+
+  function renderHermesHistoryItem(item) {
+    if (!item) return;
+    if (item.role === 'user' || item.role === 'agent') {
+      appendHermesMessage(item);
+    } else if (item.toolInfo) {
+      appendHermesToolCard(item.toolInfo);
+    }
+  }
+
+  function renderAuditLog(toolCalls) {
+    if (!railAuditList || !Array.isArray(toolCalls)) return;
+    railAuditList.innerHTML = '';
+    if (toolCalls.length === 0) {
+      railAuditList.innerHTML = '<div class="rail-preview-empty">아직 실행된 도구가 없습니다.</div>';
+      return;
+    }
+
+    for (const tc of toolCalls) {
+      const item = document.createElement('div');
+      item.className = 'audit-item';
+      const timeStr = tc.timestamp ? new Date(tc.timestamp).toLocaleTimeString() : '';
+      item.innerHTML = `
+        <div class="audit-item-header">
+          <span class="tool-action-badge">${escapeHtml(tc.action || 'Tool')}</span>
+          <span class="audit-item-time">${timeStr}</span>
+        </div>
+        <div class="audit-item-target">${escapeHtml(tc.target || '')}</div>
+      `;
+      railAuditList.appendChild(item);
+    }
+  }
+
+  async function loadWorkspaceFiles(targetDir) {
+    if (!railFileTree) return;
+    const session = activeSessionId ? clientSessions.get(activeSessionId)?.meta : null;
+    const baseDir = targetDir || (session ? session.cwd : defaultCwd);
+    railFileTree.innerHTML = '<div class="rail-preview-empty">파일 목록 불러오는 중...</div>';
+
+    try {
+      const res = await fetch(`/api/hermes/workspace?dir=${encodeURIComponent(baseDir)}&sessionId=${activeSessionId || ''}`);
+      if (!res.ok) throw new Error('디렉토리 읽기 실패');
+      const data = await res.json();
+      currentRailDir = data.cwd;
+      currentRailParent = data.parent;
+
+      if (railFilesPath) {
+        railFilesPath.textContent = data.cwd;
+      }
+      if (hermesCwdDisplay) {
+        hermesCwdDisplay.textContent = data.cwd;
+      }
+
+      railFileTree.innerHTML = '';
+      if (!Array.isArray(data.items) || data.items.length === 0) {
+        railFileTree.innerHTML = '<div class="rail-preview-empty">폴더가 비어 있습니다.</div>';
+        return;
+      }
+
+      for (const item of data.items) {
+        const el = document.createElement('div');
+        el.className = `tree-item ${item.isDirectory ? 'directory' : 'file'}`;
+        const icon = item.isDirectory ? '📁' : getFileIcon(item.ext);
+        const sizeStr = item.isDirectory ? '' : formatFileSize(item.size);
+
+        el.innerHTML = `
+          <div class="tree-item-main">
+            <span>${icon}</span>
+            <span>${escapeHtml(item.name)}</span>
+          </div>
+          <span class="tree-item-size">${sizeStr}</span>
+        `;
+
+        el.addEventListener('click', () => {
+          if (item.isDirectory) {
+            loadWorkspaceFiles(item.path);
+          } else {
+            openFileInspection(item.path);
+          }
+        });
+
+        railFileTree.appendChild(el);
+      }
+    } catch (err) {
+      railFileTree.innerHTML = `<div class="rail-preview-empty" style="color:var(--danger)">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function getFileIcon(ext) {
+    if (!ext) return '📄';
+    const map = {
+      '.js': '🟨',
+      '.ts': '🔷',
+      '.json': '📋',
+      '.html': '🌐',
+      '.css': '🎨',
+      '.md': '📝',
+      '.png': '🖼️',
+      '.jpg': '🖼️',
+      '.jpeg': '🖼️',
+      '.svg': '🎨',
+      '.sh': '⚡',
+      '.py': '🐍',
+    };
+    return map[ext] || '📄';
+  }
+
+  function formatFileSize(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  async function openFileInspection(filePath) {
+    if (!fileViewerModal || !fileViewerTitle || !fileViewerContent) return;
+    fileViewerTitle.textContent = `📄 ${filePath.split('/').pop() || filePath}`;
+    fileViewerContent.textContent = '파일 내용을 불러오는 중...';
+    fileViewerModal.hidden = false;
+
+    try {
+      const res = await fetch(`/api/hermes/file?path=${encodeURIComponent(filePath)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '파일 읽기 실패');
+      fileViewerContent.textContent = data.content || '';
+    } catch (err) {
+      fileViewerContent.textContent = `오류: ${err.message}`;
+    }
+  }
+
+  async function dispatchHermesPrompt(prompt) {
+    if (!prompt || typeof prompt !== 'string' || !prompt.trim()) return;
+    const model = hermesModelSelect?.value || 'gemini-2.5-pro';
+
+    try {
+      const res = await fetch('/api/hermes/prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: activeSessionId,
+          prompt: prompt.trim(),
+          model,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || '프롬프트 전송 실패');
+        return;
+      }
+      if (hermesPromptInput) {
+        hermesPromptInput.value = '';
+        hermesPromptInput.style.height = 'auto';
+      }
+    } catch (err) {
+      alert(`프롬프트 전송 오류: ${err.message}`);
+    }
+  }
+
+  async function interruptHermesAgent() {
+    try {
+      await fetch('/api/hermes/interrupt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: activeSessionId }),
+      });
+    } catch (err) {
+      console.error('Failed to interrupt agent:', err);
+    }
+  }
+
+  function setupHermesDesktop() {
+    // 1. View Mode Buttons
+    if (viewModeSelector) {
+      for (const btn of viewModeSelector.querySelectorAll('.view-mode-btn')) {
+        btn.addEventListener('click', () => {
+          setViewMode(btn.dataset.mode);
+        });
+      }
+    }
+
+    // Set initial view mode
+    setViewMode(currentViewMode);
+
+    // 2. Right Rail Tabs
+    for (const tab of hermesRailTabs) {
+      tab.addEventListener('click', () => {
+        const target = tab.dataset.railTab;
+        for (const t of hermesRailTabs) t.classList.toggle('active', t === tab);
+        for (const p of hermesRailPanels) {
+          p.classList.toggle('active', p.id === `railPanel${target.charAt(0).toUpperCase() + target.slice(1)}`);
+        }
+        if (target === 'terminal') {
+          setTimeout(() => fitActiveTerminal(), 30);
+        } else if (target === 'files') {
+          loadWorkspaceFiles(currentRailDir);
+        }
+      });
+    }
+
+    // 3. Popout Terminal Button
+    btnPopoutTerminal?.addEventListener('click', () => {
+      setViewMode('terminal');
+    });
+
+    // 4. File Explorer Parent & Refresh Buttons
+    btnRailFilesParent?.addEventListener('click', () => {
+      if (currentRailParent) {
+        loadWorkspaceFiles(currentRailParent);
+      }
+    });
+    btnRailFilesRefresh?.addEventListener('click', () => {
+      loadWorkspaceFiles(currentRailDir);
+    });
+    btnRefreshWorkspaceDir?.addEventListener('click', () => {
+      loadWorkspaceFiles(currentRailDir);
+    });
+
+    // 5. Audit Log Clear
+    btnRailAuditClear?.addEventListener('click', () => {
+      if (railAuditList) {
+        railAuditList.innerHTML = '<div class="rail-preview-empty">감사 로그가 비워졌습니다.</div>';
+      }
+    });
+
+    // 6. Composer Input & Key Events
+    if (hermesPromptInput) {
+      hermesPromptInput.addEventListener('input', () => {
+        hermesPromptInput.style.height = 'auto';
+        hermesPromptInput.style.height = `${Math.min(hermesPromptInput.scrollHeight, 140)}px`;
+      });
+
+      hermesPromptInput.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' && !ev.shiftKey) {
+          ev.preventDefault();
+          dispatchHermesPrompt(hermesPromptInput.value);
+        }
+      });
+    }
+
+    btnHermesSend?.addEventListener('click', () => {
+      if (hermesPromptInput) {
+        dispatchHermesPrompt(hermesPromptInput.value);
+      }
+    });
+
+    btnHermesInterrupt?.addEventListener('click', () => {
+      interruptHermesAgent();
+    });
+
+    // 7. Quick Composer Commands (/help, /compact, /clear)
+    const composerQuickBtns = document.querySelectorAll('.composer-quick-actions button');
+    for (const btn of composerQuickBtns) {
+      btn.addEventListener('click', () => {
+        const cmd = btn.dataset.cmd;
+        if (cmd) {
+          dispatchHermesPrompt(cmd);
+        }
+      });
+    }
+
+    // 8. Quick Prompt Chips
+    const promptChips = document.querySelectorAll('.hermes-prompt-chip');
+    for (const chip of promptChips) {
+      chip.addEventListener('click', () => {
+        const text = chip.dataset.prompt;
+        if (hermesPromptInput) {
+          hermesPromptInput.value = text;
+          hermesPromptInput.focus();
+          hermesPromptInput.style.height = 'auto';
+          hermesPromptInput.style.height = `${Math.min(hermesPromptInput.scrollHeight, 140)}px`;
+        }
+      });
+    }
+
+    // 9. Model Select
+    hermesModelSelect?.addEventListener('change', () => {
+      if (composerModelTag) {
+        const opt = hermesModelSelect.options[hermesModelSelect.selectedIndex];
+        composerModelTag.textContent = opt ? opt.text.split(' ')[0] : hermesModelSelect.value;
+      }
+    });
+
+    // 10. File Viewer Modal Close
+    btnCloseFileViewer?.addEventListener('click', () => {
+      if (fileViewerModal) fileViewerModal.hidden = true;
+    });
+    fileViewerModal?.addEventListener('click', (ev) => {
+      if (ev.target === fileViewerModal) {
+        fileViewerModal.hidden = true;
+      }
+    });
+  }
+
   fetchInternalBookmarks();
+  setupHermesDesktop();
   bootstrap();
 })();
