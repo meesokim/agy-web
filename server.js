@@ -564,58 +564,98 @@ function markContinuityActive() {
 function checkAndAutoApprovePrompt(session, plainChunk) {
   if (!session || session.exited || session.autoApprove === false) return;
   const now = Date.now();
-  if (now - (session.lastAutoApproveTime || 0) < 1500) {
+  if (now - (session.lastAutoApproveTime || 0) < 600) {
+    return;
+  }
+  // Prevent duplicate approval on the exact same waiting prompt buffer offset
+  if (session.scrollback.length <= (session.lastApprovedOffset || 0) + 5) {
     return;
   }
 
-  // Extract recent tail from scrollback and current chunk (up to 500 chars)
+  // Extract recent tail from scrollback and current chunk (up to 1200 chars to cover multiline menu options)
   const tailBuffer = (
-    session.scrollback.slice(-500).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '') +
+    session.scrollback.slice(-1200).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '') +
     ' ' +
     plainChunk
-  ).slice(-500);
-
-  // Common CLI confirmation prompt patterns:
-  // 1. [y/n], (y/n), [y/N], (y/N), [Y/n], [yes/no], (yes/no), [예/아니오], (예/아니오)
-  // 2. Korean questions: 계속하시겠습니까, 진행하시겠습니까, 실행하시겠습니까, 승인하시겠습니까, 덮어쓰시겠습니까
-  // 3. English questions: proceed?, continue?, allow?, approve?, confirm?, apply?, are you sure?, overwrite?
-  const CONFIRM_Y_REGEX =
-    /(?:\[[Yy]\/[Nn]\]|\([Yy]\/[Nn]\)|\[(?:yes|no)\]|\((?:yes|no)\)|\[예\/아니오\]|\(예\/아니오\)|\b(?:계속|진행|실행|승인|덮어쓰|저장)하시겠습니까|\b(?:proceed|continue|allow|approve|confirm|apply|overwrite)\b[^\r\n?]*\?|\bare\s+you\s+sure\b[^\r\n?]*\?)/i;
-
-  // Press Enter to continue
-  const CONFIRM_ENTER_REGEX =
-    /(?:press\s+(?:enter|return)\s+to\s+continue|press\s+\[?enter\]?\s+to|\b엔터를\s*누르(?:시오|세요))/i;
+  ).slice(-1200);
 
   let responseInput = null;
   let matchedStr = '';
-  let matchObj = null;
+  let inputLabel = '';
 
-  const matchY = tailBuffer.match(CONFIRM_Y_REGEX);
-  if (matchY) {
-    matchObj = matchY;
-    responseInput = 'y\r';
-    matchedStr = matchY[0].trim();
-  } else {
-    const matchEnter = tailBuffer.match(CONFIRM_ENTER_REGEX);
-    if (matchEnter) {
-      matchObj = matchEnter;
-      responseInput = '\r';
-      matchedStr = matchEnter[0].trim();
+  // 1. AGY Interactive Permission Menu (e.g. "Run this command? > 1. Yes, run command", "Apply these changes? > 1. Yes")
+  const isAgyMenu = (
+    (tailBuffer.includes('Run this command?') ||
+     tailBuffer.includes('Requesting permission for:') ||
+     tailBuffer.includes('Apply these changes?') ||
+     tailBuffer.includes('Create this file?') ||
+     tailBuffer.includes('Allow tool execution?')) &&
+    (tailBuffer.includes('> 1. Yes') ||
+     tailBuffer.includes('1. Yes, run command') ||
+     tailBuffer.includes('1. Yes, apply') ||
+     tailBuffer.includes('> 1.')) &&
+    (tailBuffer.includes('esc to cancel') ||
+     tailBuffer.includes('Navigate') ||
+     tailBuffer.includes('No, cancel'))
+  );
+
+  if (isAgyMenu) {
+    const cmdMatch = tailBuffer.match(/Requesting permission for:\s*\n\s*([^\r\n]+)/);
+    const cmdName = cmdMatch ? cmdMatch[1].trim().slice(0, 50) : 'command';
+    responseInput = '\r'; // Submits the highlighted 1. Yes option
+    matchedStr = `1. Yes (${cmdName})`;
+    inputLabel = '1 (Enter)';
+  }
+
+  // 2. Generic Numbered Choice Menu: "선택 [1]:", "Enter choice [1]:", "Choose [1-X]:"
+  if (!responseInput) {
+    const NUMBERED_CHOICE_REGEX =
+      /(?:선택\s*\(?\s*1\s*[-~]\s*\d+\s*\)?\s*:|enter\s+choice\s*(?:\(1-\d+\)|\[1\])?\s*:|select\s+an\s+option\s*\[?1\]?\s*:)/i;
+    const matchNum = tailBuffer.match(NUMBERED_CHOICE_REGEX);
+    if (matchNum) {
+      const afterPrompt = tailBuffer.slice(matchNum.index + matchNum[0].length).replace(/[\s\r\n:?]/g, '');
+      if (afterPrompt.length <= 5) {
+        responseInput = '1\r';
+        matchedStr = matchNum[0].trim();
+        inputLabel = '1';
+      }
     }
   }
 
-  if (responseInput && matchObj) {
-    // Only auto-approve if the prompt is at the active cursor end (only whitespace/colons after it)
-    const afterPrompt = tailBuffer.slice(matchObj.index + matchObj[0].length).replace(/[\s\r\n:?]/g, '');
-    if (afterPrompt.length > 5) {
-      return; // Stale prompt in history, not currently waiting for input
+  // 3. Common CLI confirmation prompt patterns:
+  // [y/n], (y/n), [y/N], (y/N), [Y/n], [yes/no], (yes/no), [예/아니오], (예/아니오)
+  // 한국어: 계속하시겠습니까, 진행하시겠습니까, 실행하시겠습니까, 승인하시겠습니까, 덮어쓰시겠습니까
+  // 영어: proceed?, continue?, allow?, approve?, confirm?, apply?, are you sure?, overwrite?
+  if (!responseInput) {
+    const CONFIRM_Y_REGEX =
+      /(?:\[[Yy]\/[Nn]\]|\([Yy]\/[Nn]\)|\[(?:yes|no)\]|\((?:yes|no)\)|\[예\/아니오\]|\(예\/아니오\)|\b(?:계속|진행|실행|승인|덮어쓰|저장)하시겠습니까|\b(?:proceed|continue|allow|approve|confirm|apply|overwrite)\b[^\r\n?]*\?|\bare\s+you\s+sure\b[^\r\n?]*\?)/i;
+    const matchY = tailBuffer.match(CONFIRM_Y_REGEX);
+    if (matchY) {
+      const afterPrompt = tailBuffer.slice(matchY.index + matchY[0].length).replace(/[\s\r\n:?]/g, '');
+      if (afterPrompt.length <= 5) {
+        responseInput = 'y\r';
+        matchedStr = matchY[0].trim();
+        inputLabel = 'y';
+      }
     }
+  }
 
-    // Cooldown for the same prompt to avoid repeating approval on the same question
-    if (session.lastApprovedMatched === matchedStr && now - (session.lastAutoApproveTime || 0) < 8000) {
-      return;
+  // 4. Press Enter to continue
+  if (!responseInput) {
+    const CONFIRM_ENTER_REGEX =
+      /(?:press\s+(?:enter|return)\s+to\s+continue|press\s+\[?enter\]?\s+to|\b엔터를\s*누르(?:시오|세요))/i;
+    const matchEnter = tailBuffer.match(CONFIRM_ENTER_REGEX);
+    if (matchEnter) {
+      const afterPrompt = tailBuffer.slice(matchEnter.index + matchEnter[0].length).replace(/[\s\r\n:?]/g, '');
+      if (afterPrompt.length <= 5) {
+        responseInput = '\r';
+        matchedStr = matchEnter[0].trim();
+        inputLabel = 'Enter';
+      }
     }
+  }
 
+  if (responseInput && matchedStr) {
     session.lastAutoApproveTime = now;
     session.lastApprovedMatched = matchedStr;
 
@@ -623,6 +663,7 @@ function checkAndAutoApprovePrompt(session, plainChunk) {
     session.autoApproveTimer = setTimeout(() => {
       if (session.exited) return;
 
+      session.lastApprovedOffset = session.scrollback.length;
       session.ptyProcess.write(responseInput);
 
       // Record in recent tool calls for visibility
@@ -630,7 +671,7 @@ function checkAndAutoApprovePrompt(session, plainChunk) {
         session.agentActivity.recentToolCalls.unshift({
           id: `auto-appr-${Date.now().toString(36)}`,
           action: 'AutoApprove',
-          target: `${matchedStr} → ${responseInput === '\r' ? '[Enter]' : '[y]'}`,
+          target: `${matchedStr} → [${inputLabel || responseInput.trim() || 'Enter'}]`,
           timestamp: new Date().toISOString(),
           status: 'completed',
         });
@@ -641,7 +682,7 @@ function checkAndAutoApprovePrompt(session, plainChunk) {
         type: 'auto_approved',
         sessionId: session.id,
         matched: matchedStr,
-        input: responseInput === '\r' ? 'Enter' : 'y',
+        input: inputLabel || (responseInput === '\r' ? 'Enter' : responseInput.trim()),
         timestamp: new Date().toISOString(),
       });
 
