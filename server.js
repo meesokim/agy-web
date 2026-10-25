@@ -1382,10 +1382,22 @@ app.post('/api/gmail/sync', (req, res) => {
 app.get('/api/gmail', async (req, res) => {
   try {
     const readUrl = req.query.readUrl || null;
-    const state = await browserBridge.fetchGmailFromBrowser({ readUrl });
+    const ensure = req.query.ensure === '1' || req.query.open === '1';
+    const state = await browserBridge.fetchGmailFromBrowser({ readUrl, ensure });
     res.json(state);
   } catch (err) {
     res.status(500).json({ error: err.message || 'Gmail 조회 실패' });
+  }
+});
+
+// REST API: Open or ensure Gmail tab via Extension / CDP
+app.post('/api/gmail/open', async (req, res) => {
+  try {
+    const activate = req.body?.activate !== false;
+    const state = await browserBridge.openOrEnsureGmailViaExtension({ activate });
+    res.json({ ok: true, state });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Gmail 열기 요청 실패' });
   }
 });
 
@@ -1436,11 +1448,20 @@ app.delete('/api/naver-cafe/cafes/:key', (req, res) => {
 });
 
 app.get('/api/naver-cafe/pending-task', (req, res) => {
-  res.json({ task: browserBridge.getPendingCafeTask() });
+  res.json({ task: browserBridge.getPendingExtensionTask() });
 });
 
 app.post('/api/naver-cafe/task-result', (req, res) => {
-  browserBridge.resolveCafeTaskResult(req.body || {});
+  browserBridge.resolveExtensionTaskResult(req.body || {});
+  res.json({ ok: true });
+});
+
+app.get('/api/extension/pending-task', (req, res) => {
+  res.json({ task: browserBridge.getPendingExtensionTask() });
+});
+
+app.post('/api/extension/task-result', (req, res) => {
+  browserBridge.resolveExtensionTaskResult(req.body || {});
   res.json({ ok: true });
 });
 

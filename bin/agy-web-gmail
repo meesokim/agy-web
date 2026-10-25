@@ -12,6 +12,7 @@ const baseUrl = `http://127.0.0.1:${port}`;
 
 const args = process.argv.slice(2);
 const isJson = args.includes('--json');
+const shouldOpen = args.includes('--open') || args.includes('-o');
 let limit = 20;
 const limitIdx = args.findIndex((a) => a === '--limit' || a === '-n');
 if (limitIdx !== -1 && args[limitIdx + 1]) {
@@ -20,26 +21,56 @@ if (limitIdx !== -1 && args[limitIdx + 1]) {
 
 (async () => {
   try {
-    const res = await fetch(`${baseUrl}/api/gmail`);
+    if (shouldOpen) {
+      process.stdout.write('\x1b[36m[i] 익스텐션/브라우저를 통해 지메일 탭 열기 및 동기화 요청 중...\x1b[0m\n');
+      try {
+        await fetch(`${baseUrl}/api/gmail/open`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activate: true }),
+        });
+      } catch (_) {}
+    }
+
+    let res = await fetch(`${baseUrl}/api/gmail`);
     if (!res.ok) {
       throw new Error(`서버 응답 오류 (HTTP ${res.status})`);
     }
-    const data = await res.json();
+    let data = await res.json();
+
+    let mails = Array.isArray(data?.mails) ? data.mails : [];
+    let openMail = data?.openMail || null;
+
+    // If no mails and user didn't explicitly open, attempt auto-open via extension once
+    if (mails.length === 0 && !openMail && !args.includes('--no-open') && !shouldOpen) {
+      try {
+        const openRes = await fetch(`${baseUrl}/api/gmail/open`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activate: false }),
+        });
+        if (openRes.ok) {
+          const openData = await openRes.json();
+          if (openData?.state?.mails?.length > 0) {
+            data = openData.state;
+            mails = data.mails;
+            openMail = data.openMail || null;
+          }
+        }
+      } catch (_) {}
+    }
 
     if (isJson) {
       console.log(JSON.stringify(data, null, 2));
       process.exit(0);
     }
 
-    const mails = Array.isArray(data?.mails) ? data.mails : [];
-    const openMail = data?.openMail || null;
-
     if (mails.length === 0 && !openMail) {
       console.log('\x1b[33m[!] 현재 동기화된 지메일(Gmail) 데이터가 없습니다.\x1b[0m');
       console.log('연동 방법:');
-      console.log('1. 브라우저에서 https://mail.google.com 에 접속합니다.');
-      console.log('2. 웹 대시보드(http://127.0.0.1:3080) 상단의 [📧 지메일] 탭에서 북마크릿을 클릭하거나,');
-      console.log('3. Chrome 확장을 로드하면 Gmail 탭을 열람할 때 자동으로 AGY 콘솔로 동기화됩니다.');
+      console.log('1. 터미널에서 \x1b[36magy-web-gmail --open\x1b[0m 실행 시 Chrome 확장을 통해 지메일 탭을 자동으로 엽니다.');
+      console.log('2. 웹 대시보드(http://127.0.0.1:3080) 상단의 [📧 지메일] 탭에서 [🚀 지메일 열기] 버튼을 누르거나,');
+      console.log('3. 브라우저에서 https://mail.google.com 에 접속하면 자동으로 AGY 콘솔로 동기화됩니다.');
       process.exit(0);
     }
 

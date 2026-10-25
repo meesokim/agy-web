@@ -1615,19 +1615,43 @@
     }
   }
 
-  async function fetchGmail(readUrl = null) {
+  async function fetchGmail(readUrl = null, ensure = false) {
     const gmailList = document.getElementById('gmailList');
     if (!gmailList) return;
     gmailList.innerHTML = '<div class="hub-note">지메일(Gmail) 데이터를 불러오는 중...</div>';
 
     try {
-      const qs = readUrl ? `?readUrl=${encodeURIComponent(readUrl)}` : '';
+      const params = new URLSearchParams();
+      if (readUrl) params.set('readUrl', readUrl);
+      if (ensure) params.set('ensure', '1');
+      const qs = params.toString() ? `?${params.toString()}` : '';
       const res = await fetch(`/api/gmail${qs}`);
       const data = await res.json();
       latestGmailData = data;
       renderGmailPanel(data);
     } catch (err) {
       gmailList.innerHTML = `<div class="hub-note">Gmail 조회 오류: ${err.message}</div>`;
+    }
+  }
+
+  async function openGmailViaExtension() {
+    const gmailList = document.getElementById('gmailList');
+    if (gmailList) {
+      gmailList.innerHTML = '<div class="hub-note">🚀 확장 프로그램을 통해 지메일 탭을 열고 메일을 동기화하는 중입니다...</div>';
+    }
+    try {
+      const res = await fetch('/api/gmail/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activate: true }),
+      });
+      const data = await res.json();
+      latestGmailData = data?.state || data;
+      renderGmailPanel(latestGmailData);
+    } catch (err) {
+      if (gmailList) {
+        gmailList.innerHTML = `<div class="hub-note">지메일 열기 실패: ${err.message}</div>`;
+      }
     }
   }
 
@@ -1643,7 +1667,13 @@
       const guide = document.createElement('div');
       guide.className = 'hub-note';
       guide.innerHTML = `
-        <div style="font-weight:700;color:#fff;margin-bottom:6px;">📧 열려 있는 Gmail 페이지 연동 방법 (택1)</div>
+        <div style="font-weight:700;color:#fff;margin-bottom:8px;">📧 지메일(Gmail) 미연결 상태</div>
+        <div style="margin-bottom:12px;background:#161b22;padding:10px 12px;border-radius:6px;border:1px solid #30363d;">
+          <div style="font-size:12.5px;color:#e6edf3;margin-bottom:6px;"><b>🚀 원클릭 지메일 열기</b></div>
+          <div style="font-size:11.5px;color:#8b949e;margin-bottom:8px;">현재 열려 있는 Chrome 익스텐션을 통해 지메일 탭을 즉시 열고 메일을 자동으로 동기화합니다.</div>
+          <button class="btn btn-primary" id="btnOpenGmailFromGuide" style="padding:6px 14px;font-size:12px;">🚀 익스텐션으로 지메일 열기 & 동기화</button>
+        </div>
+        <div style="font-weight:700;color:#c9d1d9;margin-bottom:6px;">기타 연동 방법 (택1):</div>
         <div style="margin-bottom:8px;">
           <b>방법 1 (현재 일반 브라우저 그대로 사용 — 북마크릿):</b><br/>
           아래 파란 버튼을 마우스로 끌어 브라우저 <b>북마크 바(즐겨찾기 바)</b>에 놓은 뒤, 열려 있는 Gmail(mail.google.com) 탭에서 클릭하면 즉시 메일 목록과 본문이 이곳으로 전송됩니다.<br/>
@@ -1655,10 +1685,13 @@
         </div>
         <div>
           <b>방법 3 (터미널 CLI 도구 사용):</b><br/>
-          터미널에서 <code>agy-web-gmail</code> 을 실행하면 동기화된 지메일 목록 및 본문을 즉시 조회할 수 있습니다.
+          터미널에서 <code>agy-web-gmail --open</code> 을 실행하면 익스텐션을 통해 지메일을 열고 목록 및 본문을 즉시 조회할 수 있습니다.
         </div>
       `;
       gmailList.appendChild(guide);
+      document.getElementById('btnOpenGmailFromGuide')?.addEventListener('click', () => {
+        openGmailViaExtension();
+      });
       return;
     }
 
@@ -2745,6 +2778,10 @@
 
   document.getElementById('btnRefreshGmail')?.addEventListener('click', () => {
     fetchGmail();
+  });
+
+  document.getElementById('btnOpenGmailTab')?.addEventListener('click', () => {
+    openGmailViaExtension();
   });
 
   cafeSearchForm?.addEventListener('submit', (ev) => {

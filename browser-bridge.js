@@ -803,7 +803,7 @@ const GMAIL_MAIL_EXTRACTOR_EXPR = `
 })()
 `;
 
-async function fetchGmailFromBrowser({ readUrl = null } = {}) {
+async function fetchGmailFromBrowser({ readUrl = null, ensure = false } = {}) {
   const cdpTabs = await queryCdpTabs();
   const gmailTab = cdpTabs.find(
     (t) => t.url && (t.url.includes('mail.google.com') || t.url.includes('google.com/mail')) && t.webSocketDebuggerUrl
@@ -822,6 +822,38 @@ async function fetchGmailFromBrowser({ readUrl = null } = {}) {
     } catch (err) {
       console.warn('CDP Gmail evaluation error:', err.message);
     }
+  }
+
+  if (ensure && (!cachedGmailState?.mails || cachedGmailState.mails.length === 0)) {
+    return openOrEnsureGmailViaExtension({ activate: true });
+  }
+
+  return cachedGmailState;
+}
+
+async function openOrEnsureGmailViaExtension({ activate = true, timeoutMs = 4500 } = {}) {
+  // If CDP is active and has a Gmail tab, evaluate directly
+  const cdpTabs = await queryCdpTabs();
+  const cdpGmail = cdpTabs.find(
+    (t) => t.url && (t.url.includes('mail.google.com') || t.url.includes('google.com/mail')) && t.webSocketDebuggerUrl
+  );
+  if (cdpGmail) {
+    return fetchGmailFromBrowser();
+  }
+
+  // Dispatch task to Chrome extension to open tab and fetch feed
+  await dispatchExtensionTask(
+    {
+      type: 'open-gmail',
+      url: 'https://mail.google.com/mail/u/0/#inbox',
+      activate: activate !== false,
+    },
+    timeoutMs
+  );
+
+  // Allow a brief moment for content script / background feed to sync
+  if (!cachedGmailState?.mails || cachedGmailState.mails.length === 0) {
+    await new Promise((r) => setTimeout(r, 1200));
   }
 
   return cachedGmailState;
@@ -1126,13 +1158,17 @@ function updateNaverCafeState(payload, source = 'sync') {
   return cachedNaverCafeState;
 }
 
-function getPendingCafeTask() {
-  const task = pendingCafeTask;
+let pendingExtensionTask = null;
+const pendingExtensionResolvers = new Map();
+
+function getPendingExtensionTask() {
+  const task = pendingExtensionTask || pendingCafeTask;
+  pendingExtensionTask = null;
   pendingCafeTask = null;
   return task;
 }
 
-function resolveCafeTaskResult(payload) {
+function resolveExtensionTaskResult(payload) {
   if (!payload || typeof payload !== 'object') return;
   if (Array.isArray(payload.joinedCafes) && payload.joinedCafes.length > 0) {
     saveJoinedCafes([...payload.joinedCafes, ...loadSavedJoinedCafes()]);
@@ -1143,29 +1179,51 @@ function resolveCafeTaskResult(payload) {
     cachedNaverCafeState.source = 'extension-live';
     if (payload.query) cachedNaverCafeState.lastQuery = payload.query;
   }
-  const resolver = payload.taskId && pendingCafeResolvers.get(payload.taskId);
+  if (Array.isArray(payload.mails) && payload.mails.length > 0) {
+    updateGmailState(payload, 'extension-task');
+  }
+
+  const resolver =
+    (payload.taskId && pendingExtensionResolvers.get(payload.taskId)) ||
+    (payload.taskId && pendingCafeResolvers.get(payload.taskId));
   if (resolver) {
+    pendingExtensionResolvers.delete(payload.taskId);
     pendingCafeResolvers.delete(payload.taskId);
     resolver(payload);
   }
 }
 
-function dispatchExtensionCafeTask(taskPayload, timeoutMs = 2800) {
+function dispatchExtensionTask(taskPayload, timeoutMs = 4500) {
   return new Promise((resolve) => {
-    const id = `cafe-task-${Date.now().toString(36)}-${crypto.randomBytes(2).toString('hex')}`;
-    pendingCafeTask = { id, ...taskPayload };
+    const id = `ext-task-${Date.now().toString(36)}-${crypto.randomBytes(2).toString('hex')}`;
+    pendingExtensionTask = { id, ...taskPayload };
+    pendingCafeTask = pendingExtensionTask;
     const timer = setTimeout(() => {
+      pendingExtensionResolvers.delete(id);
       pendingCafeResolvers.delete(id);
-      if (pendingCafeTask && pendingCafeTask.id === id) {
+      if (pendingExtensionTask && pendingExtensionTask.id === id) {
+        pendingExtensionTask = null;
         pendingCafeTask = null;
       }
       resolve(null);
     }, timeoutMs);
-    pendingCafeResolvers.set(id, (result) => {
+    pendingExtensionResolvers.set(id, (result) => {
       clearTimeout(timer);
       resolve(result);
     });
   });
+}
+
+function getPendingCafeTask() {
+  return getPendingExtensionTask();
+}
+
+function resolveCafeTaskResult(payload) {
+  return resolveExtensionTaskResult(payload);
+}
+
+function dispatchExtensionCafeTask(taskPayload, timeoutMs = 2800) {
+  return dispatchExtensionTask(taskPayload, timeoutMs);
 }
 
 /**
@@ -1606,6 +1664,10 @@ module.exports = {
   fetchNaverMailFromBrowser,
   updateGmailState,
   fetchGmailFromBrowser,
+  openOrEnsureGmailViaExtension,
+  dispatchExtensionTask,
+  getPendingExtensionTask,
+  resolveExtensionTaskResult,
   loadSavedJoinedCafes,
   addJoinedCafe,
   deleteJoinedCafe,
