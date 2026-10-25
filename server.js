@@ -6,7 +6,7 @@ const fs = require('fs');
 const { WebSocketServer, WebSocket } = require('ws');
 const pty = require('node-pty');
 const crypto = require('crypto');
-const { execFile } = require('child_process');
+const { execFile, execSync } = require('child_process');
 const browserBridge = require('./browser-bridge');
 
 const PORT = parseInt(process.env.PORT || '3080', 10);
@@ -1066,7 +1066,7 @@ app.post('/api/naver-cafe/task-result', (req, res) => {
 function classifyInputEntry(text) {
   const t = String(text || '').trim();
   if (t.startsWith('/')) {
-    return { type: 'slash', label: '슬래시 명령' };
+    return { type: 'slash', label: '슬래시 명령', typeLabel: '슬래시 명령' };
   }
   const firstWord = t.split(/\s+/)[0].toLowerCase();
   const COMMON_CLI = new Set([
@@ -1076,9 +1076,9 @@ function classifyInputEntry(text) {
     'which', 'where', 'bash', 'sh', 'zsh', 'pwsh', 'powershell', 'agy'
   ]);
   if (COMMON_CLI.has(firstWord) || /^[a-z0-9_.-]+(\s+-[a-zA-Z0-9]+|\s+--[a-z0-9-]+)/.test(t)) {
-    return { type: 'command', label: 'CLI 쉘 명령' };
+    return { type: 'command', label: 'CLI 쉘 명령', typeLabel: 'CLI 쉘 명령' };
   }
-  return { type: 'prompt', label: '에이전트 지시/프롬프트' };
+  return { type: 'prompt', label: '에이전트 지시/프롬프트', typeLabel: '에이전트 지시/프롬프트' };
 }
 
 function summarizeInputHistory(entries, options = {}) {
@@ -1276,6 +1276,154 @@ app.get('/api/input-history/summary', (req, res) => {
   res.json({ ok: true, summary });
 });
 
+// Helper: Calculate workday start time (04:00 AM today, or yesterday 04:00 AM if currently before 4 AM)
+function getTodayWorkdayStartTime() {
+  const now = new Date();
+  const start = new Date(now);
+  start.setHours(4, 0, 0, 0); // 04:00:00.000 AM
+  if (now.getTime() < start.getTime()) {
+    start.setDate(start.getDate() - 1);
+  }
+  return start;
+}
+
+// Helper: Detect if user input is asking for today's work summary
+function isTodayWorkSummaryIntent(text) {
+  if (!text || typeof text !== 'string') return false;
+  const normalized = text.replace(/[\s\t\r\n]+/g, ' ').trim().toLowerCase();
+  const patterns = [
+    /금일\s*(작업|업무|한\s*일).*(정리|요약|알려|보고)/,
+    /오늘\s*(작업|업무|한\s*일).*(정리|요약|알려|보고)/,
+    /오전\s*4시.*(정리|요약|알려|보고)/,
+    /4시부터.*(정리|요약|알려|보고)/,
+    /(작업|업무)\s*(내용)?\s*(정리|요약)해줘/,
+    /오늘\s*뭐\s*했(는지|어)/,
+  ];
+  return patterns.some((p) => p.test(normalized));
+}
+
+// Helper: Build comprehensive work summary from 04:00 AM today to now
+function buildTodayWorkSummary(targetSession) {
+  const startTime = getTodayWorkdayStartTime();
+  const now = new Date();
+  const startTimeMs = startTime.getTime();
+
+  // 1. Filter input history from 04:00 AM to now
+  const todayInputs = inputHistoryList
+    .filter((it) => {
+      const t = new Date(it.createdAt || 0).getTime();
+      return t >= startTimeMs;
+    })
+    .sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
+
+  // 2. Classify and group
+  const todayAnnotatedInputs = todayInputs.map((it) => {
+    const classification = classifyInputEntry(it.text);
+    return { ...it, ...classification };
+  });
+
+  const promptItems = todayAnnotatedInputs.filter((it) => it.type === 'prompt');
+  const commandItems = todayAnnotatedInputs.filter((it) => it.type === 'command');
+  const slashItems = todayAnnotatedInputs.filter((it) => it.type === 'slash');
+
+  // 3. Git commits since 04:00 AM
+  let gitCommits = [];
+  let gitBranch = '';
+  let gitChanges = '';
+  try {
+    const candidateCwds = [targetSession?.cwd, __dirname, process.cwd()].filter(Boolean);
+    let cwd = __dirname;
+    for (const c of candidateCwds) {
+      if (fs.existsSync(path.join(c, '.git'))) {
+        cwd = c;
+        break;
+      }
+    }
+    const gitLogOut = execSync(
+      'git log --since="today 04:00:00" --pretty=format:"%h|%s|%ad" --date=format:"%H:%M"',
+      { cwd, encoding: 'utf8', timeout: 3000, stdio: 'pipe' }
+    ).trim();
+    if (gitLogOut) {
+      gitCommits = gitLogOut.split('\n').map((line) => {
+        const [hash, msg, time] = line.split('|');
+        return { hash, msg: msg || '', time: time || '' };
+      });
+    }
+    gitBranch = execSync('git branch --show-current', { cwd, encoding: 'utf8', timeout: 2000, stdio: 'pipe' }).trim();
+    gitChanges = execSync('git status -s', { cwd, encoding: 'utf8', timeout: 2000, stdio: 'pipe' }).trim();
+  } catch (_) {}
+
+  // 4. Session agent tools
+  const tools = targetSession?.agentActivity?.recentToolCalls || [];
+  const todayTools = tools.filter((tc) => {
+    const t = new Date(tc.timestamp || 0).getTime();
+    return t >= startTimeMs;
+  });
+
+  const startStr = `${startTime.toLocaleDateString('ko-KR')} 오전 04:00`;
+  const endStr = `${now.toLocaleDateString('ko-KR')} ${now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}`;
+
+  // 5. Generate formatted markdown
+  let md = `# 📅 금일 작업한 내용 정리 (오전 4시 ~ 현재)\n\n`;
+  md += `- **작업 기준 기간**: ${startStr} ~ ${endStr}\n`;
+  md += `- **작업 브랜치**: \`${gitBranch || 'main'}\`\n`;
+  md += `- **웹 입력 작업 총계**: ${todayInputs.length}건 (에이전트 지시: ${promptItems.length}건, CLI 명령: ${commandItems.length}건, 도구 호출: ${todayTools.length}건)\n\n`;
+
+  md += `## 🕒 1. 웹 입력 및 작업 지시 내역 (오전 4시 이후, 시간순)\n`;
+  if (todayAnnotatedInputs.length === 0) {
+    md += `- *(오늘 오전 4시 이후 웹 콘솔에 기록된 사용자 입력이 없습니다.)*\n`;
+  } else {
+    for (const it of todayAnnotatedInputs) {
+      const timeStr = it.createdAt ? new Date(it.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+      const icon = it.type === 'prompt' ? '💬' : it.type === 'command' ? '🚀' : '💡';
+      md += `- [${timeStr}] ${icon} **${it.typeLabel}**: ${it.text}\n`;
+    }
+  }
+  md += `\n`;
+
+  if (gitCommits.length > 0) {
+    md += `## 💻 2. 금일 Git 커밋 변경 내역 (오전 4시 이후 총 ${gitCommits.length}건)\n`;
+    for (const c of gitCommits) {
+      md += `- \`${c.hash}\` (${c.time}) - **${c.msg}**\n`;
+    }
+    md += `\n`;
+  }
+
+  if (todayTools.length > 0) {
+    md += `## 🔧 3. 실행된 도구 및 파일 작업 (총 ${todayTools.length}건)\n`;
+    for (const tc of todayTools.slice(0, 15)) {
+      const tcTime = tc.timestamp ? new Date(tc.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+      md += `- [${tcTime}] **${tc.action}**: \`${tc.target}\` (${tc.status === 'completed' ? '완료' : '진행'})\n`;
+    }
+    md += `\n`;
+  }
+
+  return {
+    startTime: startTime.toISOString(),
+    endTime: now.toISOString(),
+    startFormatted: startStr,
+    endFormatted: endStr,
+    gitBranch,
+    inputCount: todayInputs.length,
+    promptCount: promptItems.length,
+    commandCount: commandItems.length,
+    toolCount: todayTools.length,
+    commitCount: gitCommits.length,
+    inputs: todayInputs,
+    commits: gitCommits,
+    tools: todayTools,
+    markdown: md,
+  };
+}
+
+// REST API: Get Today's Work Summary (04:00 AM to Now)
+app.get('/api/daily-work-summary', (req, res) => {
+  const sessionId = req.query.sessionId || PRIMARY_SESSION_ID;
+  const session = sessions.get(sessionId) || sessions.values().next().value;
+  const summary = buildTodayWorkSummary(session);
+  res.json({ ok: true, summary });
+});
+
 app.post('/api/input-history', (req, res) => {
   const { sessionId, text, source } = req.body || {};
   const session = sessionId ? sessions.get(sessionId) : null;
@@ -1376,10 +1524,40 @@ function handleSendToSession(req, res) {
     return res.json({ ok: true, sessionId: session.id, mode: 'notice' });
   }
 
-  const payloadStr = submit ? `${content}\r` : content;
-  processSessionInputForHistory(session, payloadStr);
+  const isDailySummary = isTodayWorkSummaryIntent(content);
+  let payloadContent = content;
+  let dailySummaryData = null;
+
+  if (isDailySummary && submit) {
+    dailySummaryData = buildTodayWorkSummary(session);
+    payloadContent =
+      `${dailySummaryData.markdown}\n\n` +
+      `위는 오늘 오전 4시부터 지금까지 웹 콘솔에서 작업한 실제 명령문, 프롬프트, 도구 실행 및 Git 커밋 기록입니다.\n` +
+      `이 실제 기록을 바탕으로 오늘(오전 4시부터 지금까지) 작업한 내용을 다음 순서로 일목요연하게 정리해서 보고서 형식으로 알려줘:\n` +
+      `1. 🎯 금일 작업 목표 및 핵심 테마 요약\n` +
+      `2. 🕒 시간대별 작업 진행 내역 (오전 4시~현재)\n` +
+      `3. 💻 개발 및 Git 커밋/코드 변경 사항\n` +
+      `4. ✅ 달성된 결과물 및 향후 권장 작업`;
+  }
+
+  const payloadStr = submit ? `${payloadContent}\r` : payloadContent;
+  processSessionInputForHistory(session, submit ? `${content}\r` : content);
   session.ptyProcess.write(payloadStr);
-  return res.json({ ok: true, sessionId: session.id, submitted: Boolean(submit) });
+
+  if (dailySummaryData) {
+    const cardMsg = JSON.stringify({
+      type: 'today_work_summary_card',
+      sessionId: session.id,
+      summary: dailySummaryData,
+    });
+    for (const ws of session.clients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(cardMsg);
+      }
+    }
+  }
+
+  return res.json({ ok: true, sessionId: session.id, submitted: Boolean(submit), isDailySummary });
 }
 
 app.post('/api/send', handleSendToSession);
@@ -1437,6 +1615,25 @@ app.post('/api/hermes/prompt', (req, res) => {
   }
 
   const promptText = prompt.trim();
+  const isDailySummary = isTodayWorkSummaryIntent(promptText);
+  let payloadStr;
+  let dailySummaryData = null;
+
+  if (isDailySummary) {
+    dailySummaryData = buildTodayWorkSummary(session);
+    const enrichedPrompt =
+      `${dailySummaryData.markdown}\n\n` +
+      `위는 오늘 오전 4시부터 지금까지 웹 콘솔에서 작업한 실제 명령문, 프롬프트, 도구 실행 및 Git 커밋 기록입니다.\n` +
+      `이 실제 기록을 바탕으로 오늘(오전 4시부터 지금까지) 작업한 내용을 다음 순서로 일목요연하게 정리해서 보고서 형식으로 알려줘:\n` +
+      `1. 🎯 금일 작업 목표 및 핵심 테마 요약\n` +
+      `2. 🕒 시간대별 작업 진행 내역 (오전 4시~현재)\n` +
+      `3. 💻 개발 및 Git 커밋/코드 변경 사항\n` +
+      `4. ✅ 달성된 결과물 및 향후 권장 작업`;
+    payloadStr = `${enrichedPrompt}\r`;
+  } else {
+    payloadStr = `${promptText}\r`;
+  }
+
   const historyEntry = {
     id: `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     role: 'user',
@@ -1459,8 +1656,7 @@ app.post('/api/hermes/prompt', (req, res) => {
   }
 
   // Write prompt to PTY
-  const payloadStr = `${promptText}\r`;
-  processSessionInputForHistory(session, payloadStr);
+  processSessionInputForHistory(session, `${promptText}\r`);
   session.ptyProcess.write(payloadStr);
 
   // Broadcast to WS clients
@@ -1473,6 +1669,19 @@ app.post('/api/hermes/prompt', (req, res) => {
   for (const ws of session.clients) {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(broadcastMsg);
+    }
+  }
+
+  if (dailySummaryData) {
+    const cardMsg = JSON.stringify({
+      type: 'today_work_summary_card',
+      sessionId: session.id,
+      summary: dailySummaryData,
+    });
+    for (const ws of session.clients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(cardMsg);
+      }
     }
   }
 

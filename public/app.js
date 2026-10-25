@@ -483,6 +483,8 @@
           handleHermesAgentStatus(msg);
         } else if (msg.type === 'hermes_prompt_dispatched') {
           handleHermesPromptDispatched(msg);
+        } else if (msg.type === 'today_work_summary_card') {
+          renderTodayWorkSummaryCard(msg.summary);
         } else if (msg.type === 'output') {
           entry.term.write(compactTerminalProgress(msg.data));
         } else if (msg.type === 'open_url') {
@@ -2656,6 +2658,57 @@
   function handleHermesPromptDispatched(msg) {
     if (!msg || !msg.entry) return;
     appendHermesMessage(msg.entry);
+  }
+
+  function renderTodayWorkSummaryCard(summary) {
+    if (!hermesChatFeed || !summary) return;
+    if (hermesWelcomeCard) hermesWelcomeCard.style.display = 'none';
+
+    const card = document.createElement('div');
+    card.className = 'today-summary-card';
+    card.innerHTML = `
+      <div class="today-summary-card-header">
+        <div class="today-summary-title">
+          <span class="icon">📅</span>
+          <span>금일 작업 정리 (오전 4시 ~ 현재)</span>
+        </div>
+        <div class="today-summary-badges">
+          <span class="stat-pill success">입력 ${summary.inputCount}건</span>
+          ${summary.commitCount > 0 ? `<span class="stat-pill accent">커밋 ${summary.commitCount}건</span>` : ''}
+          <span class="stat-pill">도구 ${summary.toolCount}건</span>
+        </div>
+      </div>
+      <div class="today-summary-card-body">
+        <div class="today-summary-meta">
+          <span>🕒 <strong>기간:</strong> ${escapeHtml(summary.startFormatted)} ~ ${escapeHtml(summary.endFormatted)}</span>
+          ${summary.gitBranch ? `<span>🌱 <strong>브랜치:</strong> ${escapeHtml(summary.gitBranch)}</span>` : ''}
+        </div>
+        <div class="today-summary-content">
+          <pre><code>${escapeHtml(summary.markdown)}</code></pre>
+        </div>
+        <div class="today-summary-actions">
+          <button type="button" class="btn btn-chip btn-sm btn-copy-daily">📋 요약 복사</button>
+          <button type="button" class="btn btn-chip btn-sm btn-open-daily-modal">🔍 상세 타임라인 보기</button>
+        </div>
+      </div>
+    `;
+
+    card.querySelector('.btn-copy-daily')?.addEventListener('click', (ev) => {
+      const btn = ev.currentTarget;
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(summary.markdown).then(() => {
+          btn.textContent = '✓ 복사됨';
+          setTimeout(() => { btn.textContent = '📋 요약 복사'; }, 1500);
+        });
+      }
+    });
+
+    card.querySelector('.btn-open-daily-modal')?.addEventListener('click', () => {
+      openHistorySummaryModal();
+    });
+
+    hermesChatFeed.appendChild(card);
+    hermesChatFeed.scrollTop = hermesChatFeed.scrollHeight;
   }
 
   function appendHermesMessage(entry) {

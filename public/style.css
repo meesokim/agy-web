@@ -1928,3 +1928,76 @@ html, body {
   white-space: pre-wrap;
 }
 
+
+/* Today Work Summary Chat Card */
+.today-summary-card {
+  align-self: flex-start;
+  width: 100%;
+  max-width: 92%;
+  background: #111622;
+  border: 1px solid rgba(63, 185, 80, 0.4);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  margin: 6px 0;
+}
+
+.today-summary-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(63, 185, 80, 0.1);
+  border-bottom: 1px solid rgba(63, 185, 80, 0.25);
+}
+
+.today-summary-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #56d364;
+}
+
+.today-summary-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.today-summary-card-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.today-summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.today-summary-content pre {
+  margin: 0;
+  background: #090c12;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #e6edf3;
+  max-height: 240px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+.today-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
