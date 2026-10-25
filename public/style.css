@@ -2001,3 +2001,204 @@ html, body {
   align-items: center;
   gap: 8px;
 }
+
+/* ==========================================================================
+   Feature Manager & Customization Styling
+   ========================================================================== */
+
+.feature-manager-card {
+  max-width: 860px;
+  width: 90vw;
+  height: 80vh;
+  display: flex;
+  flex-direction: column;
+  background: #0f131c;
+  border: 1px solid var(--border-color);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.feature-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.feature-tab:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.feature-tab.active {
+  color: #fff;
+  background: #1f2738;
+  border-color: var(--border-color);
+}
+
+.feature-modal-body {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+}
+
+.feature-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.feature-panel[hidden] {
+  display: none !important;
+}
+
+/* Feature Add Custom Skill Form */
+.feature-add-form {
+  background: #141824;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.feature-add-header {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.feature-add-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.feature-add-row input,
+.feature-add-row textarea {
+  background: #0b0e14;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: #e6edf3;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+}
+
+.feature-add-row input:focus,
+.feature-add-row textarea:focus {
+  border-color: var(--accent);
+}
+
+.feature-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.feature-section-note {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Feature Item Row */
+.feature-items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+.feature-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #131722;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  transition: border-color 0.15s ease;
+}
+
+.feature-item-row:hover {
+  border-color: rgba(88, 166, 255, 0.4);
+}
+
+.feature-item-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.feature-item-checkbox {
+  margin-top: 3px;
+  cursor: pointer;
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+}
+
+.feature-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.feature-item-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.feature-item-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feature-category-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(88, 166, 255, 0.1);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.feature-item-prompt {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feature-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+

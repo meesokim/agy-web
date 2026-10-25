@@ -3076,7 +3076,395 @@
     });
   }
 
+  // =========================================================================
+  // Feature Selection & Customization Manager (기능 선택 메뉴)
+  // =========================================================================
+
+  const DEFAULT_SKILLS = [
+    {
+      id: 'skill-daily-summary',
+      title: '📅 금일 작업한 내용 정리 (04시~현재)',
+      prompt: '금일 작업한 내용 정리해줘',
+      category: '요약/보고',
+      enabled: true,
+      isBuiltin: true,
+    },
+    {
+      id: 'skill-history-summary',
+      title: '⏱️ 웹 입력 히스토리 시간순 요약',
+      action: 'openHistorySummaryModal',
+      category: '요약/보고',
+      enabled: true,
+      isBuiltin: true,
+    },
+    {
+      id: 'skill-codebase-analysis',
+      title: '🔍 코드베이스 구조 분석',
+      prompt: '코드베이스 전체 구조를 분석하고 핵심 파일 및 역할을 요약해줘',
+      category: '개발/분석',
+      enabled: true,
+      isBuiltin: true,
+    },
+    {
+      id: 'skill-git-diff-commit',
+      title: '⚡ Git 변경점 점검 & 커밋',
+      prompt: 'git status 및 변경된 파일의 diff를 점검하고 커밋 메시지를 추천해줘',
+      category: 'Git/버전',
+      enabled: true,
+      isBuiltin: true,
+    },
+    {
+      id: 'skill-unit-test',
+      title: '🧪 단위 테스트 실행 및 진단',
+      prompt: '현재 프로젝트의 테스트를 실행하고 실패 원인을 분석해줘',
+      category: '테스트/품질',
+      enabled: true,
+      isBuiltin: true,
+    },
+    {
+      id: 'skill-bug-fix',
+      title: '🐛 에러 진단 및 버그 수정',
+      prompt: '최근 발견된 에러 로그나 버그를 추적하고 해결책을 구현해줘',
+      category: '디버깅',
+      enabled: true,
+      isBuiltin: true,
+    },
+    {
+      id: 'skill-doc-readme',
+      title: '📄 문서화 및 설명서 작성',
+      prompt: '프로젝트의 주요 기능과 사용법을 정리하여 README.md 문서를 보완해줘',
+      category: '문서',
+      enabled: true,
+      isBuiltin: true,
+    },
+  ];
+
+  const DEFAULT_TOOLBAR_MODULES = [
+    { id: 'mod-daily', label: '📅 금일 작업 정리', selector: '#btnQuickDailySummary', enabled: true },
+    { id: 'mod-history-summary', label: '⏱️ 시간순 요약', selector: '#btnQuickHistorySummary', enabled: true },
+    { id: 'mod-bookmark-add', label: '＋ 북마크 추가', selector: '#btnQuickAddBookmark', enabled: true },
+    { id: 'mod-naver-mail', label: '📧 네이버 메일', selector: '#btnOpenNaverMailReader', enabled: true },
+    { id: 'mod-naver-cafe', label: '☕ 가입 카페', selector: '#btnOpenNaverCafeSearch', enabled: true },
+    { id: 'mod-input-history', label: '📜 입력 히스토리', selector: '#btnOpenInputHistory', enabled: true },
+    { id: 'mod-image-viewer', label: '🖼️ 이미지 뷰어', selector: '#btnOpenImageGallery', enabled: true },
+    { id: 'mod-open-tabs', label: '🌐 열린 탭 / 북마크', selector: '#btnOpenTabsInspector', enabled: true },
+  ];
+
+  const DEFAULT_RAIL_MODULES = [
+    { id: 'rail-terminal', label: '💻 실시간 터미널', tabKey: 'terminal', enabled: true },
+    { id: 'rail-files', label: '📁 파일 탐색기', tabKey: 'files', enabled: true },
+    { id: 'rail-audit', label: '📊 실행 로그', tabKey: 'audit', enabled: true },
+    { id: 'rail-preview', label: '🖼️ 미리보기', tabKey: 'preview', enabled: true },
+  ];
+
+  const STORAGE_SKILLS_KEY = 'agy_web_skills_config';
+  const STORAGE_TOOLBAR_KEY = 'agy_web_toolbar_config';
+  const STORAGE_RAIL_KEY = 'agy_web_rail_config';
+
+  function loadFeatureConfig(key, defaults) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return JSON.parse(JSON.stringify(defaults));
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return JSON.parse(JSON.stringify(defaults));
+      return parsed;
+    } catch (_) {
+      return JSON.parse(JSON.stringify(defaults));
+    }
+  }
+
+  let skillsConfig = loadFeatureConfig(STORAGE_SKILLS_KEY, DEFAULT_SKILLS);
+  let toolbarConfig = loadFeatureConfig(STORAGE_TOOLBAR_KEY, DEFAULT_TOOLBAR_MODULES);
+  let railConfig = loadFeatureConfig(STORAGE_RAIL_KEY, DEFAULT_RAIL_MODULES);
+
+  // DOM Elements for Feature Manager
+  const featureManagerModal = document.getElementById('featureManagerModal');
+  const btnCloseFeatureManager = document.getElementById('btnCloseFeatureManager');
+  const btnToggleFeatureManager = document.getElementById('btnToggleFeatureManager');
+  const btnBarFeatureManager = document.getElementById('btnBarFeatureManager');
+  const btnManageSkills = document.getElementById('btnManageSkills');
+  const btnResetFeaturesDefault = document.getElementById('btnResetFeaturesDefault');
+
+  const featureSkillsList = document.getElementById('featureSkillsList');
+  const featureToolbarList = document.getElementById('featureToolbarList');
+  const featureRailList = document.getElementById('featureRailList');
+  const formAddCustomSkill = document.getElementById('formAddCustomSkill');
+  const inputSkillTitle = document.getElementById('inputSkillTitle');
+  const inputSkillCategory = document.getElementById('inputSkillCategory');
+  const inputSkillPrompt = document.getElementById('inputSkillPrompt');
+  const hermesQuickPrompts = document.getElementById('hermesQuickPrompts');
+
+  const btnQuickDailySummary = document.getElementById('btnQuickDailySummary');
+  const btnQuickHistorySummary = document.getElementById('btnQuickHistorySummary');
+
+  function saveSkillsConfig() {
+    localStorage.setItem(STORAGE_SKILLS_KEY, JSON.stringify(skillsConfig));
+    renderSkillsOnSidebar();
+    renderFeatureSkillsManagerList();
+  }
+
+  function saveToolbarConfig() {
+    localStorage.setItem(STORAGE_TOOLBAR_KEY, JSON.stringify(toolbarConfig));
+    applyToolbarConfig();
+    renderFeatureToolbarManagerList();
+  }
+
+  function saveRailConfig() {
+    localStorage.setItem(STORAGE_RAIL_KEY, JSON.stringify(railConfig));
+    applyRailConfig();
+    renderFeatureRailManagerList();
+  }
+
+  function renderSkillsOnSidebar() {
+    if (!hermesQuickPrompts) return;
+    hermesQuickPrompts.innerHTML = '';
+
+    const enabledSkills = skillsConfig.filter((s) => s.enabled);
+    if (enabledSkills.length === 0) {
+      hermesQuickPrompts.innerHTML = '<div style="font-size:11px;color:var(--text-secondary);padding:6px;">활성화된 빠른 스킬이 없습니다. [⚙️ 기능 선택]에서 스킬을 추가하거나 활성화하세요.</div>';
+      return;
+    }
+
+    for (const skill of enabledSkills) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'hermes-prompt-chip';
+      btn.title = skill.prompt || skill.title;
+      btn.textContent = skill.title;
+
+      btn.addEventListener('click', () => {
+        if (skill.action === 'openHistorySummaryModal') {
+          openHistorySummaryModal();
+        } else if (skill.prompt) {
+          if (hermesPromptInput) {
+            hermesPromptInput.value = skill.prompt;
+            hermesPromptInput.focus();
+            hermesPromptInput.style.height = 'auto';
+            hermesPromptInput.style.height = `${Math.min(hermesPromptInput.scrollHeight, 140)}px`;
+          }
+          dispatchHermesPrompt(skill.prompt);
+        }
+      });
+
+      hermesQuickPrompts.appendChild(btn);
+    }
+  }
+
+  function applyToolbarConfig() {
+    for (const mod of toolbarConfig) {
+      const el = document.querySelector(mod.selector);
+      if (el) {
+        el.style.display = mod.enabled ? '' : 'none';
+      }
+    }
+  }
+
+  function applyRailConfig() {
+    for (const mod of railConfig) {
+      const tabEl = document.querySelector(`.hermes-rail-tab[data-rail-tab="${mod.tabKey}"]`);
+      if (tabEl) {
+        tabEl.style.display = mod.enabled ? '' : 'none';
+      }
+    }
+  }
+
+  function renderFeatureSkillsManagerList() {
+    if (!featureSkillsList) return;
+    featureSkillsList.innerHTML = '';
+
+    for (let i = 0; i < skillsConfig.length; i++) {
+      const s = skillsConfig[i];
+      const row = document.createElement('div');
+      row.className = 'feature-item-row';
+
+      row.innerHTML = `
+        <div class="feature-item-left">
+          <input type="checkbox" class="feature-item-checkbox" ${s.enabled ? 'checked' : ''} />
+          <div class="feature-item-info">
+            <div class="feature-item-title-row">
+              <span class="feature-item-title">${escapeHtml(s.title)}</span>
+              ${s.category ? `<span class="feature-category-badge">${escapeHtml(s.category)}</span>` : ''}
+              ${s.isBuiltin ? '<span style="font-size:10px;color:var(--text-secondary);">(기본)</span>' : ''}
+            </div>
+            <div class="feature-item-prompt">${escapeHtml(s.prompt || s.action || '')}</div>
+          </div>
+        </div>
+        <div class="feature-item-actions">
+          <button type="button" class="btn btn-chip btn-sm btn-delete-skill" title="스킬 삭제">🗑️</button>
+        </div>
+      `;
+
+      row.querySelector('.feature-item-checkbox').addEventListener('change', (ev) => {
+        s.enabled = ev.target.checked;
+        saveSkillsConfig();
+      });
+
+      row.querySelector('.btn-delete-skill').addEventListener('click', () => {
+        skillsConfig.splice(i, 1);
+        saveSkillsConfig();
+      });
+
+      featureSkillsList.appendChild(row);
+    }
+  }
+
+  function renderFeatureToolbarManagerList() {
+    if (!featureToolbarList) return;
+    featureToolbarList.innerHTML = '';
+
+    for (const mod of toolbarConfig) {
+      const row = document.createElement('div');
+      row.className = 'feature-item-row';
+
+      row.innerHTML = `
+        <div class="feature-item-left">
+          <input type="checkbox" class="feature-item-checkbox" ${mod.enabled ? 'checked' : ''} />
+          <div class="feature-item-info">
+            <span class="feature-item-title">${escapeHtml(mod.label)}</span>
+          </div>
+        </div>
+      `;
+
+      row.querySelector('.feature-item-checkbox').addEventListener('change', (ev) => {
+        mod.enabled = ev.target.checked;
+        saveToolbarConfig();
+      });
+
+      featureToolbarList.appendChild(row);
+    }
+  }
+
+  function renderFeatureRailManagerList() {
+    if (!featureRailList) return;
+    featureRailList.innerHTML = '';
+
+    for (const mod of railConfig) {
+      const row = document.createElement('div');
+      row.className = 'feature-item-row';
+
+      row.innerHTML = `
+        <div class="feature-item-left">
+          <input type="checkbox" class="feature-item-checkbox" ${mod.enabled ? 'checked' : ''} />
+          <div class="feature-item-info">
+            <span class="feature-item-title">${escapeHtml(mod.label)}</span>
+          </div>
+        </div>
+      `;
+
+      row.querySelector('.feature-item-checkbox').addEventListener('change', (ev) => {
+        mod.enabled = ev.target.checked;
+        saveRailConfig();
+      });
+
+      featureRailList.appendChild(row);
+    }
+  }
+
+  function openFeatureManagerModal(defaultTab = 'skills') {
+    if (!featureManagerModal) return;
+    featureManagerModal.hidden = false;
+
+    // Switch tab
+    const tabs = document.querySelectorAll('.feature-tab');
+    for (const t of tabs) {
+      t.classList.toggle('active', t.dataset.featureTab === defaultTab);
+    }
+    const pSkills = document.getElementById('featurePanelSkills');
+    const pToolbar = document.getElementById('featurePanelToolbar');
+    const pRail = document.getElementById('featurePanelRail');
+    if (pSkills) pSkills.hidden = defaultTab !== 'skills';
+    if (pToolbar) pToolbar.hidden = defaultTab !== 'toolbar';
+    if (pRail) pRail.hidden = defaultTab !== 'rail';
+
+    renderFeatureSkillsManagerList();
+    renderFeatureToolbarManagerList();
+    renderFeatureRailManagerList();
+  }
+
+  function setupFeatureManager() {
+    // Open modal buttons
+    btnToggleFeatureManager?.addEventListener('click', () => openFeatureManagerModal('skills'));
+    btnBarFeatureManager?.addEventListener('click', () => openFeatureManagerModal('toolbar'));
+    btnManageSkills?.addEventListener('click', () => openFeatureManagerModal('skills'));
+
+    btnCloseFeatureManager?.addEventListener('click', () => {
+      if (featureManagerModal) featureManagerModal.hidden = true;
+    });
+    featureManagerModal?.addEventListener('click', (ev) => {
+      if (ev.target === featureManagerModal) {
+        featureManagerModal.hidden = true;
+      }
+    });
+
+    // Feature tabs switching
+    const featureTabs = document.querySelectorAll('.feature-tab');
+    for (const tab of featureTabs) {
+      tab.addEventListener('click', () => {
+        const target = tab.dataset.featureTab;
+        for (const t of featureTabs) t.classList.toggle('active', t === tab);
+        const pSkills = document.getElementById('featurePanelSkills');
+        const pToolbar = document.getElementById('featurePanelToolbar');
+        const pRail = document.getElementById('featurePanelRail');
+        if (pSkills) pSkills.hidden = target !== 'skills';
+        if (pToolbar) pToolbar.hidden = target !== 'toolbar';
+        if (pRail) pRail.hidden = target !== 'rail';
+      });
+    }
+
+    // Add custom skill form
+    formAddCustomSkill?.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const title = inputSkillTitle.value.trim();
+      const category = inputSkillCategory.value.trim() || '사용자 지정';
+      const prompt = inputSkillPrompt.value.trim();
+      if (!title || !prompt) return;
+
+      const newSkill = {
+        id: `skill-custom-${Date.now().toString(36)}`,
+        title,
+        category,
+        prompt,
+        enabled: true,
+        isBuiltin: false,
+      };
+
+      skillsConfig.push(newSkill);
+      saveSkillsConfig();
+
+      inputSkillTitle.value = '';
+      inputSkillCategory.value = '';
+      inputSkillPrompt.value = '';
+    });
+
+    // Reset default features
+    btnResetFeaturesDefault?.addEventListener('click', () => {
+      if (confirm('모든 스킬 및 도구 설정을 초기 기본값으로 복원하시겠습니까?')) {
+        skillsConfig = JSON.parse(JSON.stringify(DEFAULT_SKILLS));
+        toolbarConfig = JSON.parse(JSON.stringify(DEFAULT_TOOLBAR_MODULES));
+        railConfig = JSON.parse(JSON.stringify(DEFAULT_RAIL_MODULES));
+        saveSkillsConfig();
+        saveToolbarConfig();
+        saveRailConfig();
+      }
+    });
+
+    // Quick Action button handlers
+    btnQuickDailySummary?.addEventListener('click', () => {
+      dispatchHermesPrompt('금일 작업한 내용 정리해줘');
+    });
+
+    btnQuickHistorySummary?.addEventListener('click', () => {
+      openHistorySummaryModal();
+    });
+
+    // Apply initial configurations
+    renderSkillsOnSidebar();
+    applyToolbarConfig();
+    applyRailConfig();
+  }
+
   fetchInternalBookmarks();
   setupHermesDesktop();
+  setupFeatureManager();
   bootstrap();
 })();

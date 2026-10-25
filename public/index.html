@@ -35,6 +35,9 @@
       </div>
 
       <div class="top-actions">
+        <button class="btn btn-subtle" id="btnToggleFeatureManager" title="기능 선택 메뉴: 각 기능 및 스킬 추가/삭제/표시 설정">
+          <span>⚙️ 기능 메뉴</span>
+        </button>
         <button class="btn btn-subtle" id="btnToggleHub" title="내부 북마크 관리, 브라우저 북마크 및 열린 탭 조회">
           <span>🧭 북마크 & 탭 허브</span>
         </button>
@@ -53,13 +56,15 @@
       <div class="bookmark-chips" id="bookmarkChips">
         <!-- Rendered dynamically -->
       </div>
-      <div class="bookmark-bar-actions">
-        <button class="btn btn-chip" id="btnQuickAddBookmark" title="새 내부 북마크 추가">＋ 추가</button>
+      <div class="bookmark-bar-actions" id="bookmarkBarActions">
+        <button class="btn btn-chip" id="btnQuickDailySummary" title="오늘 오전 4시부터 지금까지 작업한 내용 요약">📅 금일 작업 정리</button>
+        <button class="btn btn-chip" id="btnQuickHistorySummary" title="시간순 웹 입력 히스토리 요약 보고서">⏱️ 시간순 요약</button>
+        <button class="btn btn-chip" id="btnQuickAddBookmark" title="새 내부 북마크 추가">＋ 북마크</button>
         <button class="btn btn-chip" id="btnOpenNaverMailReader" title="열려 있는 네이버 메일 페이지에서 메일 목록 및 본문 읽어오기">
-          📧 네이버 메일 읽기
+          📧 네이버 메일
         </button>
         <button class="btn btn-chip" id="btnOpenNaverCafeSearch" title="내가 가입한 네이버 카페의 게시글 검색 및 조회">
-          ☕ 가입 카페 검색
+          ☕ 가입 카페
         </button>
         <button class="btn btn-chip" id="btnOpenInputHistory" title="웹 콘솔에서 입력한 명령어 및 프롬프트 히스토리 로그 확인">
           📜 입력 히스토리
@@ -68,7 +73,10 @@
           🖼️ 이미지 뷰어
         </button>
         <button class="btn btn-chip" id="btnOpenTabsInspector" title="현재 브라우저의 북마크 및 열려 있는 탭 확인">
-          🌐 열린 탭 / 브라우저 북마크
+          🌐 열린 탭
+        </button>
+        <button class="btn btn-chip" id="btnBarFeatureManager" title="기능 추가/삭제/표시 설정">
+          ⚙️ 기능 설정
         </button>
       </div>
     </div>
@@ -143,29 +151,12 @@
           </div>
 
           <div class="hermes-sidebar-section" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
-            <div class="hermes-section-label">⚡ 빠른 실행 작업 (Skills)</div>
-            <div class="hermes-quick-prompts">
-              <button type="button" class="hermes-prompt-chip" data-prompt="금일 작업한 내용 정리해줘" title="오늘 오전 4시부터 지금까지 웹 콘솔에서 작업한 내용과 커밋 내역을 정리하여 보고서 작성">
-                📅 금일 작업한 내용 정리 (04시~현재)
-              </button>
-              <button type="button" class="hermes-prompt-chip" id="btnHermesQuickHistorySummary" title="웹에서 입력한 사용자 명령문과 작업 흐름을 시간순으로 요약 분석">
-                ⏱️ 웹 입력 히스토리 시간순 요약
-              </button>
-              <button type="button" class="hermes-prompt-chip" data-prompt="코드베이스 전체 구조를 분석하고 핵심 파일 및 역할을 요약해줘">
-                🔍 코드베이스 구조 분석
-              </button>
-              <button type="button" class="hermes-prompt-chip" data-prompt="git status 및 변경된 파일의 diff를 점검하고 커밋 메시지를 추천해줘">
-                ⚡ Git 변경점 점검 & 커밋
-              </button>
-              <button type="button" class="hermes-prompt-chip" data-prompt="현재 프로젝트의 테스트를 실행하고 실패 원인을 분석해줘">
-                🧪 단위 테스트 실행 및 진단
-              </button>
-              <button type="button" class="hermes-prompt-chip" data-prompt="최근 발견된 에러 로그나 버그를 추적하고 해결책을 구현해줘">
-                🐛 에러 진단 및 버그 수정
-              </button>
-              <button type="button" class="hermes-prompt-chip" data-prompt="프로젝트의 주요 기능과 사용법을 정리하여 README.md 문서를 보완해줘">
-                📄 문서화 및 설명서 작성
-              </button>
+            <div class="hermes-section-label-row">
+              <span class="hermes-section-label">⚡ 빠른 실행 작업 (Skills)</span>
+              <button type="button" class="btn btn-chip btn-sm" id="btnManageSkills" title="스킬 추가/삭제/표시 설정">⚙️ 기능 선택</button>
+            </div>
+            <div class="hermes-quick-prompts" id="hermesQuickPrompts">
+              <!-- Dynamically populated from active skills configuration -->
             </div>
           </div>
 
@@ -377,6 +368,67 @@
         </div>
         <div class="summary-view-panel" id="summaryViewMarkdown" hidden>
           <pre><code id="summaryMarkdownContent"></code></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal for Feature Selection & Customization Manager -->
+  <div class="modal-backdrop" id="featureManagerModal" hidden>
+    <div class="modal-card feature-manager-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-header-left">
+          <h3>⚙️ 기능 선택 및 모듈 관리자</h3>
+          <span class="history-summary-stats-badge" id="featureManagerBadge">설정 관리</span>
+        </div>
+        <button class="modal-close" id="btnCloseFeatureManager" aria-label="닫기">✕</button>
+      </div>
+
+      <div class="summary-modal-toolbar">
+        <div class="summary-tabs">
+          <button type="button" class="feature-tab active" data-feature-tab="skills">⚡ 에이전트 스킬 관리</button>
+          <button type="button" class="feature-tab" data-feature-tab="toolbar">🧭 상단 도구/바 관리</button>
+          <button type="button" class="feature-tab" data-feature-tab="rail">💻 인스펙터 패널 관리</button>
+        </div>
+        <div class="summary-actions">
+          <button type="button" class="btn btn-subtle btn-sm" id="btnResetFeaturesDefault" title="모든 기능을 기본 설정으로 복원">
+            🔄 기본값 복원
+          </button>
+        </div>
+      </div>
+
+      <div class="feature-modal-body">
+        <!-- Panel 1: Agent Skills -->
+        <div class="feature-panel active" id="featurePanelSkills">
+          <!-- Add Custom Skill Form -->
+          <form class="feature-add-form" id="formAddCustomSkill">
+            <div class="feature-add-header">
+              <span>＋ 새 에이전트 스킬 / 빠른 작업 추가</span>
+            </div>
+            <div class="feature-add-row">
+              <input type="text" id="inputSkillTitle" placeholder="스킬 이름 (예: 🚀 프로덕션 빌드 & 테스트)" required autocomplete="off" style="flex:1;" />
+              <input type="text" id="inputSkillCategory" placeholder="분류 (선택, 예: 배포)" style="width:120px;" autocomplete="off" />
+            </div>
+            <div class="feature-add-row">
+              <textarea id="inputSkillPrompt" placeholder="에이전트에게 전달할 프롬프트 지시문 입력..." required rows="2" style="flex:1;resize:vertical;"></textarea>
+              <button type="submit" class="btn btn-primary" style="align-self:flex-end;">＋ 스킬 등록</button>
+            </div>
+          </form>
+
+          <div class="feature-section-title">현재 등록된 스킬 목록 (체크박스로 표시/숨김 토글, 휴지통으로 삭제)</div>
+          <div class="feature-items-list" id="featureSkillsList"></div>
+        </div>
+
+        <!-- Panel 2: Toolbar & Hub Modules -->
+        <div class="feature-panel" id="featurePanelToolbar" hidden>
+          <div class="feature-section-note">상단 북마크/퀵 툴바 및 드로어에서 표시할 기능 항목을 선택하세요:</div>
+          <div class="feature-items-list" id="featureToolbarList"></div>
+        </div>
+
+        <!-- Panel 3: Inspector Rail Modules -->
+        <div class="feature-panel" id="featurePanelRail" hidden>
+          <div class="feature-section-note">우측 인스펙터 레일에서 활성화할 탭 패널을 선택하세요:</div>
+          <div class="feature-items-list" id="featureRailList"></div>
         </div>
       </div>
     </div>
